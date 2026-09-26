@@ -423,16 +423,6 @@ body { min-height:100vh; background:#fcf9f0; padding:30px; }
     box-shadow:0 2px 8px rgba(0,0,0,.08);
 }
 
-.logout-btn {
-    background:#d32f2f;
-    color:white;
-}
-
-.logout-btn:hover {
-    background:#b71c1c;
-    transform:translateY(-2px);
-}
-
 .badge {
     position:absolute;
     top:-7px;
@@ -534,8 +524,6 @@ body { min-height:100vh; background:#fcf9f0; padding:30px; }
 <body>
 
 <div class="topbar">
-    <a href="/dashboard" class="top-btn">🏠 Dashboard</a>
-
     <a href="/notifications" class="top-btn">
         🔔 Notifications
         {% if unread_count > 0 %}
@@ -544,7 +532,6 @@ body { min-height:100vh; background:#fcf9f0; padding:30px; }
     </a>
 
     <a href="/profile" class="top-btn">👤 Profile</a>
-    <a href="/logout" class="top-btn logout-btn">🚪 Logout</a>
 </div>
 
 <div class="welcome-section">
@@ -1020,6 +1007,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 <div class="top">
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;">
 <a class="back" href="/dashboard">← Back to Dashboard</a>
+<a class="back" href="/logout" style="color:#d32f2f;">↪ Log Out</a>
 </div>
 <a class="back" href="/profile">👤 Profile</a>
 </div>
@@ -1906,7 +1894,7 @@ def schedule_page():
     user_schedules = schedules.get(user_id, [])
     user_schedules.sort(key=lambda x: (x.get("date", ""), x.get("time_in", "")))
 
-    return render_template_string(f'''<!DOCTYPE html>
+    return render_template_string(f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1987,7 +1975,7 @@ def schedule_page():
     </div>
 <script src="/static/alarm.js"></script>
 </body>
-</html>''')
+</html>""")
 
 # === DELETE SCHEDULE ROUTE ===
 @app.route('/schedule/delete/<int:index>', methods=['POST'])
@@ -2063,4 +2051,4 @@ def logout():
     return redirect('/')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
