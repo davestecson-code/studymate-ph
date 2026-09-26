@@ -1,10 +1,12 @@
 from flask import Flask, render_template_string, send_from_directory, request, redirect, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 import os, json, uuid, secrets, smtplib
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # === GLOBAL DARK MODE ===
 # This is injected into every HTML page so the Dark Mode setting works
@@ -31,16 +33,154 @@ body.dark .delete-notification,body.dark .danger{background:#4a2024!important;co
 body.dark .secondary,body.dark .gray,body.dark .btn{background:#203a54!important;color:#eaf2fb!important}
 body.dark .file-row{border-color:rgba(255,255,255,.12)!important}
 body.dark .file-download{color:#10243b!important}
+/* SAME DARK MODE ON ALL AUTHENTICATED PAGES (Profile, Settings, Schedule, Notes, etc.) */
+html.dark-mode-active,html.dark-mode-active body{color-scheme:dark!important}
+html.dark-mode-active body,body.dark{background-color:#0b1726!important;color:#eaf2fb!important;background-image:linear-gradient(rgba(7,18,31,.84),rgba(7,18,31,.84)),url('/static/bg.jpg')!important;background-repeat:no-repeat!important;background-size:cover!important;background-position:center center!important;background-attachment:fixed!important}
+html.dark-mode-active body::before,html.dark-mode-active body::after{background:transparent!important}
+html.dark-mode-active .card,html.dark-mode-active .overlay,html.dark-mode-active .panel,html.dark-mode-active .stat-card,html.dark-mode-active .quick-panel,html.dark-mode-active .notification,html.dark-mode-active .container>.card{background:rgba(17,35,54,.94)!important;color:#eaf2fb!important;border-color:rgba(242,201,76,.18)!important}
+html.dark-mode-active .card p,html.dark-mode-active .overlay p,html.dark-mode-active .panel p,html.dark-mode-active .sub,html.dark-mode-active .small{color:#b9c9da!important}
+html.dark-mode-active input,html.dark-mode-active select,html.dark-mode-active textarea{background:#0f2236!important;color:#eaf2fb!important;border-color:#35516d!important}
+html.dark-mode-active input::placeholder,html.dark-mode-active textarea::placeholder{color:#8fa5bb!important}
+html.dark-mode-active h1,html.dark-mode-active h2,html.dark-mode-active h3,html.dark-mode-active h4,html.dark-mode-active label{color:#F2C94C!important}
+html.dark-mode-active .back,html.dark-mode-active .back-link{color:#F2C94C!important}
+html.dark-mode-active .success{background:#163b25!important;color:#9ee2b0!important}
+html.dark-mode-active .error{background:#4a2024!important;color:#ffb4b4!important}
+html.dark-mode-active .page-sidebar{background:linear-gradient(180deg,#081f38 0%,#0b2c4d 70%,#071b30 100%)!important}
+html.dark-mode-active .page-menu-backdrop{background:rgba(0,0,0,.52)!important}
+html.dark-mode-active .studymate-global-header{background:linear-gradient(90deg,#071d35,#123e68)!important}
+html.dark-mode-active .studymate-global-header .header-menu,html.dark-mode-active .studymate-global-header .header-bell{background:rgba(255,255,255,.10)!important}
 @media(max-width:700px){.global-dark-toggle{top:12px;right:12px;padding:9px 12px;font-size:13px}}
 </style>
 """
+
+GLOBAL_FIXED_HEADER_CSS = r'''
+<style id="studymate-fixed-header-css">
+.studymate-global-header{position:fixed;top:0;left:0;right:0;height:70px;z-index:100001;display:flex;align-items:center;justify-content:space-between;padding:0 24px 0 18px;background:#174B7A;color:#fff;box-shadow:0 3px 12px rgba(0,0,0,.16)}
+.studymate-global-header .header-left{display:flex;align-items:center;gap:14px;min-width:0}
+.studymate-global-header .header-menu{position:relative;z-index:100002;pointer-events:auto!important;touch-action:manipulation;-webkit-tap-highlight-color:transparent;width:46px;height:46px;border:0;border-radius:10px;background:rgba(255,255,255,.12);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:5px;flex:none}
+.studymate-global-header .header-menu span{display:block;width:23px;height:3px;border-radius:4px;background:#fff}
+.studymate-global-header .header-menu span:nth-child(2){background:#F2C94C}
+.studymate-global-header .header-brand{font-size:24px;font-weight:800;white-space:nowrap}
+.studymate-global-header .header-brand span{color:#F2C94C}
+.studymate-global-header .header-right{display:flex;align-items:center;gap:16px}
+.studymate-global-header .header-bell{position:relative;width:46px;height:46px;border:0;border-radius:10px;background:rgba(255,255,255,.12);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.studymate-global-header .header-bell svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.studymate-global-header .header-badge{position:absolute;right:-5px;top:-5px;min-width:20px;height:20px;padding:2px 5px;border-radius:20px;background:#F2C94C;color:#174B7A;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;border:2px solid #174B7A}
+.studymate-global-header .header-page-title{font-size:16px;font-weight:700;opacity:.94}
+body.studymate-global-header-page{
+    padding-top:70px!important;
+    background-image:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg')!important;
+    background-repeat:no-repeat!important;
+    background-size:cover!important;
+    background-position:center center!important;
+    background-attachment:fixed!important;
+}
+body.studymate-global-header-page .page-menu-toggle{display:none!important;pointer-events:none!important}
+body.studymate-global-header-page .page-sidebar{z-index:4500!important}
+body.studymate-global-header-page .page-menu-backdrop{z-index:4000!important}
+body.dark .studymate-global-header{background:linear-gradient(90deg,#071d35,#123e68)!important}
+body.dark .studymate-global-header .header-menu,body.dark .studymate-global-header .header-bell{background:rgba(255,255,255,.10)!important}
+.studymate-global-header,.studymate-global-header *{pointer-events:auto!important}.studymate-global-header{isolation:isolate!important}.studymate-global-header .header-menu{cursor:pointer!important;user-select:none!important;-webkit-user-select:none!important}
+@media(max-width:700px){.studymate-global-header{height:64px;padding:0 12px}.studymate-global-header .header-menu,.studymate-global-header .header-bell{width:42px;height:42px}.studymate-global-header .header-brand{font-size:21px}.studymate-global-header .header-page-title{display:none}body.studymate-global-header-page{padding-top:64px!important}}
+</style>
+'''
+
+GLOBAL_PAGE_MENU_CSS = r'''
+<style id="studymate-global-page-menu-css">
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99998;pointer-events:none}
+.page-nav-open .page-menu-backdrop{display:block;pointer-events:auto}
+.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:100000;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}
+.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}
+.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}
+.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}
+body.dark .page-sidebar{background:linear-gradient(180deg,#081f38 0%,#0b2c4d 70%,#071b30 100%)!important}
+body.dark .page-sidebar-nav a:hover,body.dark .page-sidebar-nav a.active{background:#F2C94C;color:#123E68}
+</style>
+'''
+
+GLOBAL_PAGE_MENU_HTML = r'''
+<div class="page-menu-backdrop" onclick="closePageMenu(event)" aria-hidden="true"></div>
+<aside class="page-sidebar" id="pageSidebar" aria-label="StudyMate navigation">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+'''
+
+GLOBAL_FIXED_HEADER_HTML = r'''
+<header class="studymate-global-header" id="studymateGlobalHeader">
+    <div class="header-left">
+        <button class="header-menu" type="button" onclick="togglePageMenu(event); return false;" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+        <div class="header-brand">StudyMate <span>PH</span></div>
+    </div>
+    <div class="header-right">
+        <button class="header-bell" type="button" onclick="window.location.href='/notifications'" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>__BADGE__
+        </button>
+        <div class="header-page-title">__TITLE__</div>
+    </div>
+</header>
+<script id="studymate-fixed-header-js">
+(function(){
+    function setMenu(opened){
+        var s=document.getElementById('pageSidebar');
+        if(!s) return false;
+        s.classList.toggle('open', !!opened);
+        document.body.classList.toggle('page-nav-open', !!opened);
+        var buttons=document.querySelectorAll('.studymate-global-header .header-menu, .page-menu-toggle');
+        buttons.forEach(function(b){ b.setAttribute('aria-expanded', opened ? 'true' : 'false'); });
+        var backdrop=document.querySelector('.page-menu-backdrop');
+        if(backdrop){
+            backdrop.style.display=opened ? 'block' : 'none';
+            backdrop.style.pointerEvents=opened ? 'auto' : 'none';
+        }
+        return true;
+    }
+    window.togglePageMenu=function(e){
+        if(e){ e.preventDefault(); e.stopPropagation(); }
+        var s=document.getElementById('pageSidebar');
+        if(!s) return false;
+        return setMenu(!s.classList.contains('open'));
+    };
+    window.closePageMenu=function(e){
+        if(e){ e.preventDefault(); e.stopPropagation(); }
+        return setMenu(false);
+    };
+    window.__studyMateToggleMenu=window.togglePageMenu;
+    window.openGlobalPageMenu=window.togglePageMenu;
+    window.closeGlobalPageMenu=window.closePageMenu;
+    // The header button already uses onclick=togglePageMenu(event).
+    // Do NOT add another document-level click handler here: it would toggle
+    // the menu twice (open, then immediately closed).
+    document.addEventListener('DOMContentLoaded', function(){
+        var b=document.querySelector('.studymate-global-header .header-menu');
+        if(b){
+            b.style.pointerEvents='auto';
+            b.style.position='relative';
+            b.style.zIndex='100000';
+            b.setAttribute('aria-expanded','false');
+        }
+    });
+})();
+</script>
+'''
 GLOBAL_THEME_JS = r"""
 <script id="studymate-global-theme-js">
 (function(){
     const KEY='studymate_dark_mode';
     function applyTheme(){
         const dark=localStorage.getItem(KEY)==='1';
-        document.body.classList.toggle('dark',dark);
+        document.documentElement.classList.toggle('dark-mode-active',dark);
+        if(document.body) document.body.classList.toggle('dark',dark);
         document.querySelectorAll('.global-dark-toggle').forEach(function(btn){btn.textContent=dark?'☀️ Light Mode':'🌙 Dark Mode';});
         const existing=document.querySelector('.dark-mode');
         if(existing) existing.textContent=dark?'☀️ Light Mode':'🌙 Dark Mode';
@@ -49,11 +189,10 @@ GLOBAL_THEME_JS = r"""
         localStorage.setItem(KEY,document.body.classList.contains('dark')?'0':'1');
         applyTheme();
     };
-    window.addEventListener('DOMContentLoaded',function(){
-        // Dark Mode is controlled only by the Dashboard button.
-        // Other pages keep the saved theme, but do not show a Dark Mode button.
-        applyTheme();
-    });
+    // Apply immediately so Profile, Settings and every other page use the
+    // same saved theme as Dashboard without a light-mode flash.
+    applyTheme();
+    window.addEventListener('DOMContentLoaded',applyTheme);
 })();
 </script>
 """
@@ -72,6 +211,31 @@ def inject_global_theme(response):
                 html=html.replace('</head>', GLOBAL_THEME_CSS + '</head>', 1)
             if 'id="studymate-global-theme-js"' not in html:
                 html=html.replace('</body>', GLOBAL_THEME_JS + '</body>', 1)
+
+            # Dashboard already has its own fixed header. Every other
+            # authenticated page gets the same fixed top header.
+            if request.path != '/dashboard' and 'user_id' in session and 'id="studymateGlobalHeader"' not in html:
+                notifications = load_notifications()
+                uid = str(session.get('user_id', ''))
+                unread = sum(1 for n in notifications.get(uid, []) if not n.get('read', False))
+                title_map = {
+                    '/schedule': 'Class Schedule',
+                    '/deadlines': 'Deadlines',
+                    '/group-projects': 'Group Projects',
+                    '/notes': 'Notes',
+                    '/notifications': 'Notifications',
+                    '/profile': 'Profile',
+                     '/settings': 'Settings'
+                }
+                header_title = next((v for k, v in title_map.items() if request.path.startswith(k)), 'Dashboard')
+                badge = f'<span class="header-badge">{unread}</span>' if unread else ''
+                header = GLOBAL_FIXED_HEADER_HTML.replace('__TITLE__', header_title).replace('__BADGE__', badge)
+                html = html.replace('<body>', '<body class="studymate-global-header-page">', 1)
+                if 'id="pageSidebar"' not in html:
+                    html = html.replace('</head>', GLOBAL_PAGE_MENU_CSS + '</head>', 1)
+                    html = html.replace('</body>', GLOBAL_PAGE_MENU_HTML + '</body>', 1)
+                html = html.replace('</head>', GLOBAL_FIXED_HEADER_CSS + '</head>', 1)
+                html = html.replace('</body>', header + '</body>', 1)
             response.set_data(html)
         except Exception:
             pass
@@ -98,7 +262,12 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
 
 # Gmail recovery: set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your environment.
 GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS", "").strip()
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip().replace(" ", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+try:
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+except ValueError:
+    SMTP_PORT = 465
 
 # === Load & Save ===
 def load_users():
@@ -142,14 +311,15 @@ def send_recovery_email(recipient, reset_link):
         "StudyMate PH"
     )
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as smtp:
-            smtp.starttls()
+        # Gmail works reliably with SSL on port 465. The host/port can also be
+        # overridden with SMTP_HOST and SMTP_PORT when deploying elsewhere.
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
             smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             smtp.send_message(msg)
         return True, ""
     except Exception as exc:
-        print("Gmail recovery email error:", exc)
-        return False, "Unable to send the recovery email. Check the Gmail App Password configuration."
+        print("Recovery email error:", repr(exc))
+        return False, f"Unable to send the recovery email: {exc}"
 
 def load_schedules():
     if not os.path.exists(SCHEDULE_FILE): return {}
@@ -474,7 +644,7 @@ def forgot_password():
             tokens = cleaned
             tokens[token] = {'user_id': str(target_uid), 'expires_at': (now + timedelta(minutes=30)).isoformat()}
             save_recovery_tokens(tokens)
-            reset_link = url_for('reset_password', token=token, _external=True)
+            reset_link = url_for('reset_password', token=token, _external=True, _scheme='https') if request.headers.get('X-Forwarded-Proto', request.scheme) == 'https' else url_for('reset_password', token=token, _external=True)
             ok, err = send_recovery_email(email, reset_link)
             if not ok:
                 error = err
@@ -674,7 +844,7 @@ DASHBOARD_HTML = r'''<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}
 
-body{min-height:100vh;background:linear-gradient(rgba(226,239,250,.74),rgba(242,247,252,.88)),url('/static/bg.jpg') center/cover fixed;color:#20354d}
+body.dashboard-page{min-height:100vh;background-color:#eef5fb;background-image:linear-gradient(rgba(226,239,250,.74),rgba(242,247,252,.88)),url('/static/bg.jpg');background-repeat:no-repeat;background-size:cover;background-position:center center;background-attachment:fixed;color:#20354d}
 
 /* TOP HEADER */
 .top-header{
@@ -686,8 +856,10 @@ body{min-height:100vh;background:linear-gradient(rgba(226,239,250,.74),rgba(242,
 .header-left{display:flex;align-items:center;gap:14px}
 .menu-toggle{
     width:42px;height:42px;border:0;border-radius:10px;
-    background:rgba(255,255,255,.12);color:white;font-size:23px;cursor:pointer
+    background:rgba(255,255,255,.12);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;flex:none
 }
+.menu-toggle span{display:block;width:21px;height:2.5px;background:#fff;border-radius:3px;transition:none}
+.menu-toggle:hover{background:rgba(255,255,255,.20)}
 .header-brand{font-size:24px;font-weight:800}
 .header-brand span{color:#F2C94C}
 .header-title{font-size:16px;font-weight:700;opacity:.92}
@@ -748,7 +920,7 @@ body{min-height:100vh;background:linear-gradient(rgba(226,239,250,.74),rgba(242,
 .logout-action:hover{background:#b71c1c}
 
 /* MAIN */
-.main{margin-left:0;padding:100px 34px 35px;min-height:100vh;transition:margin-left .25s ease, padding .25s ease;background:rgba(252,249,240,.12)}
+.main{margin-left:0;padding:100px 34px 35px;min-height:100vh;transition:margin-left .25s ease, padding .25s ease;background:transparent}
 body.sidebar-open .sidebar{transform:translateX(0)}
 body.sidebar-open .main{margin-left:285px}
 .content{max-width:1180px;margin:0 auto}
@@ -758,7 +930,7 @@ body.sidebar-open .main{margin-left:285px}
 .dark-mode{background:rgba(255,255,255,.88);border:1px solid rgba(23,75,143,.12);border-radius:12px;padding:12px 16px;color:#2F6F9F;font-weight:800;box-shadow:0 4px 14px rgba(23,75,143,.10);cursor:pointer}
 
 /* DARK MODE */
-body.dark{background:#0b1726 !important;color:#eaf2fb !important;background-image:linear-gradient(rgba(7,18,31,.82),rgba(7,18,31,.82)),url('/static/bg.jpg') !important;background-size:cover;background-position:center;background-attachment:fixed}
+body.dark{background:#0b1726 !important;color:#eaf2fb !important;background-image:linear-gradient(rgba(7,18,31,.82),rgba(7,18,31,.82)),url('/static/bg.jpg') !important;background-repeat:no-repeat !important;background-size:cover !important;background-position:center center !important;background-attachment:fixed !important}
 body.dark .top-header{background:linear-gradient(90deg,#071d35,#123e68) !important;border-bottom-color:rgba(242,201,76,.35)}
 body.dark .sidebar{background:linear-gradient(180deg,#081f38 0%,#0b2c4d 70%,#071b30 100%) !important}
 body.dark .main{background:rgba(7,18,31,.28) !important}
@@ -838,10 +1010,10 @@ body.dark .menu-toggle{background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,
 </style>
 </head>
 
-<body>
+<body class="dashboard-page">
 <header class="top-header">
     <div class="header-left">
-        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" aria-expanded="false">☰</button>
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
         <div class="header-brand">StudyMate <span>PH</span></div>
     </div>
     <div class="header-right">
@@ -995,7 +1167,6 @@ function toggleSidebar(){
     const btn = document.querySelector('.menu-toggle');
     const opened = document.body.classList.contains('sidebar-open');
     if(btn){
-        btn.textContent = opened ? '✕' : '☰';
         btn.setAttribute('aria-expanded', opened ? 'true' : 'false');
         btn.setAttribute('aria-label', opened ? 'Close menu' : 'Open menu');
     }
@@ -1121,7 +1292,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
-.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}.page-sidebar.open{transform:translateX(0)}
 .page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
@@ -1138,12 +1309,12 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
 function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
 function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
@@ -1512,7 +1683,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
-.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}.page-sidebar.open{transform:translateX(0)}
 .page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
@@ -1529,12 +1700,12 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
 function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
 function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
@@ -1695,7 +1866,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
-.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}.page-sidebar.open{transform:translateX(0)}
 .page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
@@ -1712,12 +1883,12 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
 function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
 function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
@@ -1957,7 +2128,7 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:whit
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
-.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}.page-sidebar.open{transform:translateX(0)}
 .page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
@@ -1974,12 +2145,12 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:whit
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
 function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
 function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
@@ -2354,6 +2525,13 @@ def delete_group_file(group_id, file_id):
     return redirect(url_for('group_project_detail', group_id=group_id))
 
 
+@app.route('/settings')
+def settings_page():
+    if "user_id" not in session:
+        return redirect("/login")
+    return redirect("/profile")
+
+
 @app.route('/profile', methods=['GET', 'POST'])
 def profile():
     if "user_id" not in session:
@@ -2421,7 +2599,7 @@ PROFILE_HTML = r'''<!DOCTYPE html>
 <title>Profile - StudyMate PH</title>
 <style>
 * { box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
-body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
+body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center center/cover no-repeat fixed; padding:105px 35px 35px; color:#20354d; }
 .profile-top { max-width:650px; margin:0 auto 16px; display:flex; align-items:center; justify-content:space-between; min-height:42px; }
 .profile-top .back { margin:0; }
 .card { max-width:650px; margin:auto; background:white; padding:35px; border-radius:18px; box-shadow:0 4px 20px rgba(0,0,0,.08); }
@@ -2429,13 +2607,20 @@ h1 { color:#174B7A; }
 form { display:flex; flex-direction:column; gap:12px; }
 label { font-weight:700; }
 input { padding:13px; border:1px solid #ccc; border-radius:10px; font-size:15px; }
-body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
+body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center center/cover no-repeat fixed; padding:35px; color:#20354d; }
 .card { background:rgba(255,255,255,.91); box-shadow:0 6px 20px rgba(23,75,143,.10); backdrop-filter:blur(6px); }
 .password-wrap{position:relative}.password-wrap input{width:100%;padding-right:62px}.toggle-password{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle-password svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle-password:hover{background:transparent;opacity:.72}
 .save { margin-top:10px; padding:14px; border:0; border-radius:30px; background:#F2C94C; font-weight:800; cursor:pointer; }
 .success { padding:12px; background:#e8f7e8; color:#237b35; border-radius:8px; margin-bottom:15px; }
 .error { padding:12px; background:#ffebee; color:#c62828; border-radius:8px; margin-bottom:15px; }
 .back { display:inline-block; margin-top:20px; color:#174B7A; font-weight:700; text-decoration:none; }
+
+body{background-repeat:no-repeat!important;background-size:cover!important;background-position:center center!important;background-attachment:fixed!important;}
+
+body.dark .profile-top .back{color:#F2C94C!important}
+body.dark .card{background:rgba(17,35,54,.94)!important;color:#eaf2fb!important;border-color:rgba(242,201,76,.18)!important}
+body.dark h1,body.dark h3,body.dark label{color:#F2C94C!important}
+body.dark input{background:#0f2236!important;color:#eaf2fb!important;border-color:#35516d!important}
 </style>
 </head>
 <body>
@@ -2524,7 +2709,7 @@ h1 { color:#174B7A; }
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
-.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto;pointer-events:auto}.page-sidebar.open{transform:translateX(0)}
 .page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
@@ -2541,12 +2726,12 @@ h1 { color:#174B7A; }
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
 function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
 function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
@@ -2668,7 +2853,7 @@ def schedule_page():
 /* SHARED THREE-LINE MENU */
 .page-menu-toggle{{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}}
 .page-menu-toggle span{{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}}.page-menu-toggle span:nth-child(2){{background:#F2C94C}}.page-menu-toggle:hover{{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}}
-.page-menu-backdrop{{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}}.page-sidebar{{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}}.page-sidebar.open{{transform:translateX(0)}}
+.page-menu-backdrop{{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:99980}}.page-sidebar{{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}}.page-sidebar.open{{transform:translateX(0)}}
 .page-sidebar-brand{{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}}.page-sidebar-brand h2{{margin:0;font-size:27px;font-weight:800}}.page-sidebar-brand h2 span{{color:#F2C94C}}.page-sidebar-brand p{{margin:3px 0 0;font-size:12px;opacity:.78}}.page-sidebar-nav{{display:flex;flex-direction:column;gap:7px}}.page-sidebar-nav a{{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}}.page-sidebar-nav .icon{{width:24px;text-align:center;font-size:19px}}.page-sidebar-bottom{{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}}.page-sidebar-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}}.page-sidebar-actions a{{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}}.page-sidebar-actions a:last-child{{background:#F2C94C;color:#20354d}}.page-sidebar .menu-close-note{{font-size:11px;opacity:.68;margin-top:12px}}.page-nav-open .page-menu-backdrop{{display:block}}@media(max-width:700px){{.page-menu-toggle{{top:10px;left:10px;width:42px;height:42px}}.page-sidebar{{width:min(285px,86vw)}}
 </style>
 </head>
@@ -2685,12 +2870,12 @@ def schedule_page():
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
-<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+<a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
-(function(){{const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){{const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')}})}})();
+(function(){{const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){{const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')}})}})();
 function togglePageMenu(){{const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}}
 function closePageMenu(){{const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}}
 document.addEventListener('keydown',function(e){{if(e.key==='Escape')closePageMenu()}});
