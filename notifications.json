@@ -1,0 +1,33 @@
+{
+  "358281de": [
+    {
+      "id": "1b391d87-f365-40d9-9066-9e30ac321f94",
+      "title": "Schedule Added",
+      "message": "Your ECM schedule was added successfully.",
+      "date": "September 26, 2026 11:52 AM",
+      "read": true
+    },
+    {
+      "id": "9c845e09-c3f2-48ce-b892-178376313c8f",
+      "title": "New Deadline Added",
+      "message": "asd is due on 2026-09-28 at 23:56.",
+      "date": "September 26, 2026 11:53 AM",
+      "read": true
+    },
+    {
+      "id": "2cd61385-9971-40fa-92cd-031a9d9ae4c2",
+      "title": "Group Project Created",
+      "message": "You created 'Ivan Dave Tecson'. Group code: 5F355E.",
+      "date": "September 26, 2026 11:54 AM",
+      "read": true
+    }
+  ],
+  "a1635d22": [
+    {
+      "title": "Joined Group Project",
+      "message": "You joined 'Ivan Dave Tecson' successfully.",
+      "date": "September 26, 2026 10:45 AM",
+      "read": true
+    }
+  ]
+}
