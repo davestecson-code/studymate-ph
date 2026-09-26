@@ -50,12 +50,8 @@ GLOBAL_THEME_JS = r"""
         applyTheme();
     };
     window.addEventListener('DOMContentLoaded',function(){
-        if(!document.querySelector('.dark-mode') && !document.querySelector('.global-dark-toggle')){
-            const btn=document.createElement('button');
-            btn.type='button';btn.className='global-dark-toggle';
-            btn.onclick=window.toggleGlobalDarkMode;
-            document.body.appendChild(btn);
-        }
+        // Dark Mode is controlled only by the Dashboard button.
+        // Other pages keep the saved theme, but do not show a Dark Mode button.
         applyTheme();
     });
 })();
@@ -2646,6 +2642,8 @@ def schedule_page():
         .add-form {{ background: rgba(234,243,250,.82); padding: 25px; border-radius: 12px; margin-bottom: 35px; }}
         .add-form h3 {{ margin-bottom: 18px; font-size: 20px; }}
         .form-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }}
+        .time-field {{ display:flex; flex-direction:column; gap:6px; }}
+        .time-field label {{ font-weight:700; color:#174B7A; font-size:14px; }}
         .full-width {{ grid-column: 1 / -1; }}
         .add-form input, .add-form textarea {{ padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; width: 100%; }}
         .add-btn {{ background: #2F6F9F; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-top: 15px; font-size: 16px; }}
@@ -2705,8 +2703,8 @@ document.addEventListener('keydown',function(e){{if(e.key==='Escape')closePageMe
                     <input type="date" name="date" required>
                     <input type="text" name="subject" placeholder="Subject Name" required>
                     <input type="text" name="room" placeholder="Room No." required>
-                    <input type="time" name="time_in" required>
-                    <input type="time" name="time_out" required>
+                    <div class="time-field"><label for="scheduleTimeIn">🕐 Time In</label><input id="scheduleTimeIn" type="time" name="time_in" required></div>
+                    <div class="time-field"><label for="scheduleTimeOut">🕐 Time Out</label><input id="scheduleTimeOut" type="time" name="time_out" required></div>
                     <label style="grid-column:1/-1;font-weight:700;color:#174B7A;">⏰ Alarm / Reminder (Optional)</label>
                     <input type="date" name="alarm_date" title="Alarm Date">
                     <input type="time" name="alarm_time" title="Alarm Time">
