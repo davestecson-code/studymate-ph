@@ -1,8 +1,81 @@
 from flask import Flask, render_template_string, send_from_directory, request, redirect, session, url_for
-import os, json, uuid
-from datetime import datetime
+import os, json, uuid, secrets, smtplib
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+
+# === GLOBAL DARK MODE ===
+# This is injected into every HTML page so the Dark Mode setting works
+# across Dashboard, Profile, Notifications, Schedule, Deadlines, Notes,
+# Group Projects, Login, and other rendered pages.
+GLOBAL_THEME_CSS = r"""
+<style id="studymate-global-theme">
+.global-dark-toggle{position:fixed;top:16px;right:18px;z-index:2300;border:1px solid rgba(23,75,143,.14);border-radius:12px;background:rgba(255,255,255,.92);color:#2F6F9F;padding:11px 15px;font-weight:800;cursor:pointer;box-shadow:0 5px 16px rgba(23,75,143,.12);backdrop-filter:blur(8px)}
+.global-dark-toggle:hover{transform:translateY(-1px)}
+body.dark{background-color:#0b1726!important;color:#eaf2fb!important;background-image:linear-gradient(rgba(7,18,31,.84),rgba(7,18,31,.84)),url('/static/bg.jpg')!important;background-size:cover;background-position:center;background-attachment:fixed}
+body.dark .global-dark-toggle{background:#F2C94C!important;color:#10243b!important;border-color:#F2C94C!important}
+body.dark .card,body.dark .overlay,body.dark .panel,body.dark .stat-card,body.dark .quick-panel,body.dark .notification,body.dark .container>.card{background:rgba(17,35,54,.94)!important;color:#eaf2fb!important;border-color:rgba(242,201,76,.18)!important;box-shadow:0 8px 24px rgba(0,0,0,.30)!important}
+body.dark h1,body.dark h2,body.dark h3,body.dark h4,body.dark .title,body.dark .subject,body.dark .day-date,body.dark label{color:#F2C94C!important}
+body.dark p,body.dark .subtitle,body.dark .meta,body.dark .date,body.dark .empty,body.dark .time,body.dark .room,body.dark .comment{color:#b9c9da!important}
+body.dark input,body.dark select,body.dark textarea{background:#0f2236!important;color:#eaf2fb!important;border-color:#35516d!important}
+body.dark input::placeholder,body.dark textarea::placeholder{color:#8fa5bb!important}
+body.dark hr{border-color:rgba(255,255,255,.14)!important}
+body.dark .notification{background:#112336!important;border-left-color:#F2C94C!important}
+body.dark .back,body.dark .back-link{color:#F2C94C!important}
+body.dark .add-form,body.dark .filters,body.dark .schedule-item{background:rgba(15,34,54,.92)!important;color:#eaf2fb!important;border-color:rgba(242,201,76,.18)!important}
+body.dark .page-sidebar{background:linear-gradient(180deg,#081f38 0%,#0b2c4d 70%,#071b30 100%)!important}
+body.dark .page-menu-backdrop{background:rgba(0,0,0,.52)!important}
+body.dark .delete-notification,body.dark .danger{background:#4a2024!important;color:#ffb4b4!important}
+body.dark .secondary,body.dark .gray,body.dark .btn{background:#203a54!important;color:#eaf2fb!important}
+body.dark .file-row{border-color:rgba(255,255,255,.12)!important}
+body.dark .file-download{color:#10243b!important}
+@media(max-width:700px){.global-dark-toggle{top:12px;right:12px;padding:9px 12px;font-size:13px}}
+</style>
+"""
+GLOBAL_THEME_JS = r"""
+<script id="studymate-global-theme-js">
+(function(){
+    const KEY='studymate_dark_mode';
+    function applyTheme(){
+        const dark=localStorage.getItem(KEY)==='1';
+        document.body.classList.toggle('dark',dark);
+        document.querySelectorAll('.global-dark-toggle').forEach(function(btn){btn.textContent=dark?'☀️ Light Mode':'🌙 Dark Mode';});
+        const existing=document.querySelector('.dark-mode');
+        if(existing) existing.textContent=dark?'☀️ Light Mode':'🌙 Dark Mode';
+    }
+    window.toggleGlobalDarkMode=function(){
+        localStorage.setItem(KEY,document.body.classList.contains('dark')?'0':'1');
+        applyTheme();
+    };
+    window.addEventListener('DOMContentLoaded',function(){
+        if(!document.querySelector('.dark-mode') && !document.querySelector('.global-dark-toggle')){
+            const btn=document.createElement('button');
+            btn.type='button';btn.className='global-dark-toggle';
+            btn.onclick=window.toggleGlobalDarkMode;
+            document.body.appendChild(btn);
+        }
+        applyTheme();
+    });
+})();
+</script>
+"""
+
+@app.after_request
+def inject_global_theme(response):
+    if response.content_type and response.content_type.startswith('text/html'):
+        try:
+            html=response.get_data(as_text=True)
+            if 'id="studymate-global-theme"' not in html:
+                html=html.replace('</head>', GLOBAL_THEME_CSS + '</head>', 1)
+            if 'id="studymate-global-theme-js"' not in html:
+                html=html.replace('</body>', GLOBAL_THEME_JS + '</body>', 1)
+            response.set_data(html)
+        except Exception:
+            pass
+    return response
+
 app.secret_key = "studymate_ph_secure_key_2026"
 
 DB_FILE = "users.json"
@@ -11,6 +84,20 @@ NOTIFICATION_FILE = "notifications.json"
 DEADLINE_FILE = "deadlines.json"
 GROUP_FILE = "group_projects.json"
 NOTES_FILE = "notes.json"
+RECOVERY_FILE = "password_resets.json"
+UPLOAD_FOLDER = os.path.join("static", "group_uploads")
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {
+    "ppt", "pptx", "pps", "ppsx", "jpg", "jpeg", "png", "gif", "webp",
+    "mp4", "mov", "avi", "mkv", "webm", "pdf", "doc", "docx",
+    "xls", "xlsx", "txt", "zip", "rar"
+}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
+
+# Gmail recovery: set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in your environment.
+GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS", "").strip()
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").strip()
 
 # === Load & Save ===
 def load_users():
@@ -22,6 +109,46 @@ def load_users():
 def save_users(users):
     with open(DB_FILE, "w") as f:
         json.dump(users, f, indent=2)
+
+
+def load_recovery_tokens():
+    if not os.path.exists(RECOVERY_FILE):
+        return {}
+    with open(RECOVERY_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except:
+            return {}
+
+
+def save_recovery_tokens(tokens):
+    with open(RECOVERY_FILE, "w") as f:
+        json.dump(tokens, f, indent=2)
+
+
+def send_recovery_email(recipient, reset_link):
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        return False, "Gmail recovery is not configured yet. Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD."
+    msg = EmailMessage()
+    msg["Subject"] = "StudyMate PH - Password Recovery"
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = recipient
+    msg.set_content(
+        "Hello,\n\n"
+        "We received a request to reset your StudyMate PH password.\n\n"
+        f"Open this link to create a new password: {reset_link}\n\n"
+        "This link expires in 30 minutes. If you did not request this, you can ignore this email.\n\n"
+        "StudyMate PH"
+    )
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as smtp:
+            smtp.starttls()
+            smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            smtp.send_message(msg)
+        return True, ""
+    except Exception as exc:
+        print("Gmail recovery email error:", exc)
+        return False, "Unable to send the recovery email. Check the Gmail App Password configuration."
 
 def load_schedules():
     if not os.path.exists(SCHEDULE_FILE): return {}
@@ -205,16 +332,16 @@ def home():
     <title>StudyMate PH</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
-        body { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #fcf9f0; }
+        body { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #F5F8FC; }
         .logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 30px; }
         .logo-icon-wrap { position: relative; width: 52px; height: 52px; }
-        .logo-square { background-color: #0a3472; width: 52px; height: 52px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+        .logo-square { background-color: #174B7A; width: 52px; height: 52px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
         .logo-letter-s { color: white; font-size: 32px; font-weight: 800; }
-        .logo-pencil { position: absolute; top: -6px; right: -6px; font-size: 34px; color: #f9c80e; }
-        .brand-text { font-size: 44px; font-weight: 700; color: #0a3472; }
-        .brand-text .ph { color: #f9c80e; }
-        .main-title { font-size: 52px; font-weight: 800; color: #0a3472; margin-bottom: 50px; }
-        .get-started-btn { background-color: #f9c80e; color: #222; border: none; padding: 16px 65px; font-size: 20px; font-weight: 700; border-radius: 50px; cursor: pointer; }
+        .logo-pencil { position: absolute; top: -6px; right: -6px; font-size: 34px; color: #F2C94C; }
+        .brand-text { font-size: 44px; font-weight: 700; color: #174B7A; }
+        .brand-text .ph { color: #F2C94C; }
+        .main-title { font-size: 52px; font-weight: 800; color: #174B7A; margin-bottom: 50px; }
+        .get-started-btn { background-color: #F2C94C; color: #222; border: none; padding: 16px 65px; font-size: 20px; font-weight: 700; border-radius: 50px; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -224,7 +351,9 @@ def home():
     </div>
     <h1 class="main-title">StudyMate PH</h1>
     <button class="get-started-btn" onclick="window.location.href='/login'">Get Started</button>
+
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>''')
 
@@ -276,18 +405,22 @@ LOGIN_HTML = '''<!DOCTYPE html>
     }
         .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; }
         .logo-icon-wrap { position: relative; width: 48px; height: 48px; }
-        .logo-square { background-color: #0a3472; width: 48px; height: 48px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+        .logo-square { background-color: #174B7A; width: 48px; height: 48px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
         .logo-letter-s { color: white; font-size: 28px; font-weight: 800; }
-        .logo-pencil { position: absolute; top: -5px; right: -5px; font-size: 30px; color: #f9c80e; }
-        .brand-text { font-size: 36px; font-weight: 700; color: #0a3472; }
-        .brand-text .ph { color: #f9c80e; }
+        .logo-pencil { position: absolute; top: -5px; right: -5px; font-size: 30px; color: #F2C94C; }
+        .brand-text { font-size: 36px; font-weight: 700; color: #174B7A; }
+        .brand-text .ph { color: #F2C94C; }
         form { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 18px; margin-top: 10px; }
         input { padding: 16px 20px; font-size: 16px; border: 1px solid #ccc; border-radius: 12px; }
-        .login-btn { background-color: #f9c80e; border: none; padding: 16px; font-size: 18px; font-weight: 700; border-radius: 50px; cursor: pointer; }
+        .password-wrap{position:relative;width:100%;}
+        .password-wrap input{width:100%;padding-right:62px;}
+        .toggle-password{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle-password svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle-password:hover{background:transparent;opacity:.72}
+        .forgot-link{display:block;text-align:right;margin-top:-7px;color:#174B7A;text-decoration:none;font-weight:700;font-size:14px;}
+        .login-btn { background-color: #F2C94C; border: none; padding: 16px; font-size: 18px; font-weight: 700; border-radius: 50px; cursor: pointer; }
         .error { color: #d32f2f; margin: 10px 0; font-weight: 600; }
         .register-link { margin: 15px 0; font-size: 16px; }
-        .register-link a { color: #0a3472; font-weight: 600; text-decoration: none; }
-        .back-link { margin-top: 25px; color: #0a3472; text-decoration: none; }
+        .register-link a { color: #174B7A; font-weight: 600; text-decoration: none; }
+        .back-link { margin-top: 25px; color: #174B7A; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -296,18 +429,107 @@ LOGIN_HTML = '''<!DOCTYPE html>
             <div class="logo-icon-wrap"><div class="logo-square"><span class="logo-letter-s">S</span><span class="logo-pencil">✏️</span></div></div>
             <span class="brand-text">studymate <span class="ph">ph</span></span>
         </div>
+        {% if request.args.get('reset') == 'success' %}<p style="color:#237b35;background:#e8f7e8;padding:10px;border-radius:9px;font-weight:700;">✅ Password reset successful. You can now log in.</p>{% endif %}
         <form method="POST">
             <input type="text" name="email_or_id" placeholder="Email or Student ID" required>
-            <input type="password" name="password" placeholder="Password" required>
+            <div class="password-wrap">
+                <input id="loginPassword" type="password" name="password" placeholder="Password" required>
+                <button type="button" class="toggle-password icon-toggle" onclick="togglePassword('loginPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button>
+            </div>
+            <a class="forgot-link" href="/forgot-password">Forgot password?</a>
             <button type="submit" class="login-btn">Log In</button>
         </form>
         {% if error %}<p class="error">❌ Wrong Email/ID or Password!</p>{% endif %}
         <p class="register-link">No account? <a href="/register">Register here</a></p>
         <a href="/" class="back-link">← Back to Home</a>
     </div>
+<script>function eyeIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>';} function eyeOffIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.2 3.9M6.2 6.2C3.5 8.1 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 4.1-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';} function togglePassword(id,btn){const input=document.getElementById(id);if(!input||!btn)return;const show=input.type==='password';input.type=show?'text':'password';btn.innerHTML=show?eyeOffIcon():eyeIcon();btn.setAttribute('aria-label',show?'Hide password':'Show password');btn.setAttribute('title',show?'Hide password':'Show password');}</script>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
+
+# === PASSWORD RECOVERY ===
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    message = ""
+    error = ""
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        users = load_users()
+        target_uid = next((uid for uid, u in users.items() if u.get('email', '').strip().lower() == email), None)
+        message = "If an account uses that email, a recovery link has been sent."
+        if target_uid:
+            token = secrets.token_urlsafe(32)
+            tokens = load_recovery_tokens()
+            now = datetime.now()
+            cleaned = {}
+            for key, value in tokens.items():
+                try:
+                    if datetime.fromisoformat(value.get('expires_at', '2000-01-01T00:00:00')) > now:
+                        cleaned[key] = value
+                except Exception:
+                    pass
+            tokens = cleaned
+            tokens[token] = {'user_id': str(target_uid), 'expires_at': (now + timedelta(minutes=30)).isoformat()}
+            save_recovery_tokens(tokens)
+            reset_link = url_for('reset_password', token=token, _external=True)
+            ok, err = send_recovery_email(email, reset_link)
+            if not ok:
+                error = err
+                message = ""
+    return render_template_string(FORGOT_PASSWORD_HTML, message=message, error=error)
+
+
+@app.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    tokens = load_recovery_tokens()
+    item = tokens.get(token)
+    if not item:
+        return render_template_string(RESET_PASSWORD_HTML, invalid=True, error='This recovery link is invalid or has expired.')
+    try:
+        expired = datetime.fromisoformat(item.get('expires_at', '2000-01-01T00:00:00')) <= datetime.now()
+    except Exception:
+        expired = True
+    if expired:
+        tokens.pop(token, None)
+        save_recovery_tokens(tokens)
+        return render_template_string(RESET_PASSWORD_HTML, invalid=True, error='This recovery link is invalid or has expired.')
+
+    if request.method == 'POST':
+        password = request.form.get('password', '').strip()
+        confirm = request.form.get('confirm_password', '').strip()
+        if not password:
+            return render_template_string(RESET_PASSWORD_HTML, invalid=False, error='Please enter a new password.')
+        if password != confirm:
+            return render_template_string(RESET_PASSWORD_HTML, invalid=False, error='Passwords do not match.')
+        users = load_users()
+        user_id = str(item.get('user_id'))
+        if user_id not in users:
+            return render_template_string(RESET_PASSWORD_HTML, invalid=True, error='Account not found.')
+        users[user_id]['password'] = password
+        save_users(users)
+        tokens.pop(token, None)
+        save_recovery_tokens(tokens)
+        return redirect('/login?reset=success')
+
+    return render_template_string(RESET_PASSWORD_HTML, invalid=False, error='')
+
+
+FORGOT_PASSWORD_HTML = r'''<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Recover Password - StudyMate PH</title>
+<style>
+*{box-sizing:border-box;font-family:'Segoe UI',sans-serif} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(rgba(10,52,114,.55),rgba(10,52,114,.55)),url('/static/bg.jpg') center/cover fixed}.card{width:100%;max-width:520px;background:rgba(255,255,255,.97);padding:38px;border-radius:24px;box-shadow:0 12px 35px rgba(0,0,0,.2)}h1{color:#174B7A;margin:0 0 8px}.sub{color:#667085;margin:0 0 22px}.field{width:100%;padding:15px 17px;border:1px solid #ccc;border-radius:12px;font-size:16px;margin-bottom:14px}.btn{width:100%;border:0;border-radius:50px;padding:15px;background:#F2C94C;color:#222;font-weight:800;font-size:17px;cursor:pointer}.back{display:block;text-align:center;margin-top:20px;color:#174B7A;text-decoration:none;font-weight:700}.success{padding:12px;border-radius:10px;background:#e8f7e8;color:#237b35;margin-bottom:15px}.error{padding:12px;border-radius:10px;background:#ffebee;color:#c62828;margin-bottom:15px}
+</style></head><body><div class="card"><h1>🔐 Recover Password</h1><p class="sub">Enter your Gmail address and we will send a secure password reset link.</p>{% if message %}<div class="success">{{ message }}</div>{% endif %}{% if error %}<div class="error">{{ error }}</div>{% endif %}<form method="POST"><input class="field" type="email" name="email" placeholder="Gmail / Email Address" required><button class="btn" type="submit">Send Recovery Link</button></form><a class="back" href="/login">← Back to Log In</a></div>
+</body></html>'''
+
+RESET_PASSWORD_HTML = r'''<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Reset Password - StudyMate PH</title>
+<style>
+*{box-sizing:border-box;font-family:'Segoe UI',sans-serif} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:#F5F8FC}.card{width:100%;max-width:520px;background:white;padding:38px;border-radius:24px;box-shadow:0 8px 25px rgba(0,0,0,.1)}h1{color:#174B7A;margin:0 0 20px}.field-wrap{position:relative;margin-bottom:14px}.field{width:100%;padding:15px 62px 15px 17px;border:1px solid #ccc;border-radius:12px;font-size:16px}.toggle{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle:hover{background:transparent;opacity:.72}.btn{width:100%;border:0;border-radius:50px;padding:15px;background:#F2C94C;font-weight:800;font-size:17px;cursor:pointer}.error{padding:12px;border-radius:10px;background:#ffebee;color:#c62828;margin-bottom:15px}.back{display:block;text-align:center;margin-top:20px;color:#174B7A;text-decoration:none;font-weight:700}
+</style></head><body><div class="card"><h1>🔑 Create New Password</h1>{% if error %}<div class="error">{{ error }}</div>{% endif %}{% if not invalid %}<form method="POST"><div class="field-wrap"><input id="resetPassword" class="field" type="password" name="password" placeholder="New Password" required><button type="button" class="toggle icon-toggle" onclick="togglePassword('resetPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div><div class="field-wrap"><input id="resetConfirm" class="field" type="password" name="confirm_password" placeholder="Confirm New Password" required><button type="button" class="toggle icon-toggle" onclick="togglePassword('resetConfirm',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div><button class="btn" type="submit">Reset Password</button></form>{% endif %}<a class="back" href="/login">← Back to Log In</a></div><script>function eyeIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>';} function eyeOffIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.2 3.9M6.2 6.2C3.5 8.1 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 4.1-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';} function togglePassword(id,btn){const input=document.getElementById(id);if(!input||!btn)return;const show=input.type==='password';input.type=show?'text':'password';btn.innerHTML=show?eyeOffIcon():eyeIcon();btn.setAttribute('aria-label',show?'Hide password':'Show password');btn.setAttribute('title',show?'Hide password':'Show password');}</script>
+</body></html>'''
+
 
 # === REGISTER ===
 @app.route('/register', methods=['GET', 'POST'])
@@ -337,19 +559,22 @@ def register():
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
         body { min-height: 100vh; display: flex; }
-        .right-side { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #fcf9f0; padding: 40px; }
+        .right-side { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #F5F8FC; padding: 40px; }
         .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; }
         .logo-icon-wrap { position: relative; width: 48px; height: 48px; }
-        .logo-square { background-color: #0a3472; width: 48px; height: 48px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+        .logo-square { background-color: #174B7A; width: 48px; height: 48px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
         .logo-letter-s { color: white; font-size: 28px; font-weight: 800; }
-        .logo-pencil { position: absolute; top: -5px; right: -5px; font-size: 30px; color: #f9c80e; }
-        .brand-text { font-size: 36px; font-weight: 700; color: #0a3472; }
-        .brand-text .ph { color: #f9c80e; }
-        h2 { color: #0a3472; margin-bottom: 20px; }
+        .logo-pencil { position: absolute; top: -5px; right: -5px; font-size: 30px; color: #F2C94C; }
+        .brand-text { font-size: 36px; font-weight: 700; color: #174B7A; }
+        .brand-text .ph { color: #F2C94C; }
+        h2 { color: #174B7A; margin-bottom: 20px; }
         form { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 15px; }
         input { padding: 14px 18px; font-size: 15px; border: 1px solid #ccc; border-radius: 10px; }
-        .register-btn { background-color: #f9c80e; border: none; padding: 14px; font-size: 17px; font-weight: 700; border-radius: 50px; cursor: pointer; margin-top: 10px; }
-        .back-link { margin-top: 25px; color: #0a3472; text-decoration: none; }
+        .password-wrap{position:relative;width:100%;}
+        .password-wrap input{width:100%;padding-right:62px;}
+        .toggle-password{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle-password svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle-password:hover{background:transparent;opacity:.72}
+        .register-btn { background-color: #F2C94C; border: none; padding: 14px; font-size: 17px; font-weight: 700; border-radius: 50px; cursor: pointer; margin-top: 10px; }
+        .back-link { margin-top: 25px; color: #174B7A; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -363,13 +588,15 @@ def register():
             <input type="text" name="name" placeholder="Full Name" required>
             <input type="email" name="email" placeholder="Email Address" required>
             <input type="text" name="student_id" placeholder="Student ID" required>
-            <input type="password" name="password" placeholder="Password" required>
-            <input type="password" name="confirm_password" placeholder="Confirm Password" required>
+            <div class="password-wrap"><input id="registerPassword" type="password" name="password" placeholder="Password" required><button type="button" class="toggle-password icon-toggle" onclick="togglePassword('registerPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div>
+            <div class="password-wrap"><input id="registerConfirm" type="password" name="confirm_password" placeholder="Confirm Password" required><button type="button" class="toggle-password icon-toggle" onclick="togglePassword('registerConfirm',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div>
             <button type="submit" class="register-btn">Register</button>
         </form>
         <a href="/login" class="back-link">← Back to Log In</a>
     </div>
+<script>function eyeIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>';} function eyeOffIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.2 3.9M6.2 6.2C3.5 8.1 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 4.1-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';} function togglePassword(id,btn){const input=document.getElementById(id);if(!input||!btn)return;const show=input.type==='password';input.type=show?'text':'password';btn.innerHTML=show?eyeOffIcon():eyeIcon();btn.setAttribute('aria-label',show?'Hide password':'Show password');btn.setAttribute('title',show?'Hide password':'Show password');}</script>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>''')
 
@@ -380,189 +607,425 @@ def dashboard():
         return redirect("/login")
 
     users = load_users()
-    user_id = session["user_id"]
+    user_id = str(session["user_id"])
     u = users.get(user_id, session.get("user", {}))
     session["user"] = u
 
     notifications = load_notifications()
     user_notifications = notifications.get(user_id, [])
     unread_count = sum(1 for n in user_notifications if not n.get("read", False))
+    recent_notifications = list(reversed(user_notifications[-5:]))
 
-    return render_template_string(DASHBOARD_HTML,
+    # Dashboard statistics
+    schedules = load_schedules().get(user_id, [])
+    deadlines = load_deadlines().get(user_id, [])
+    groups = load_groups()
+
+    today = datetime.now().date()
+    upcoming_classes = 0
+    for item in schedules:
+        try:
+            class_date = datetime.strptime(item.get("date", ""), "%Y-%m-%d").date()
+            if class_date >= today:
+                upcoming_classes += 1
+        except:
+            pass
+
+    pending_deadlines = sum(
+        1 for d in deadlines
+        if not d.get("completed", False)
+    )
+
+    my_groups = [
+        g for g in groups.values()
+        if user_id in [str(x) for x in g.get("members", [])]
+    ]
+
+    completed_tasks = sum(
+        1 for d in deadlines if d.get("completed", False)
+    )
+    for group in my_groups:
+        completed_tasks += sum(
+            1 for task in group.get("tasks", [])
+            if task.get("completed", False)
+        )
+
+    return render_template_string(
+        DASHBOARD_HTML,
         user_name=u.get("name", "Student"),
-        unread_count=unread_count
+        user_id=u.get("student_id", ""),
+        username=u.get("email", "").split("@")[0] if u.get("email") else "",
+        unread_count=unread_count,
+        recent_notifications=recent_notifications,
+        upcoming_classes=upcoming_classes,
+        pending_deadlines=pending_deadlines,
+        group_projects=len(my_groups),
+        completed_tasks=completed_tasks
     )
 
 
-DASHBOARD_HTML = '''<!DOCTYPE html>
+DASHBOARD_HTML = r'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dashboard - StudyMate PH</title>
 <style>
-* { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
-body { min-height:100vh; background:#fcf9f0; padding:30px; }
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}
 
-.topbar {
-    max-width:1000px;
-    margin:0 auto 20px;
-    display:flex;
-    justify-content:flex-end;
-    gap:12px;
+body{min-height:100vh;background:linear-gradient(rgba(226,239,250,.74),rgba(242,247,252,.88)),url('/static/bg.jpg') center/cover fixed;color:#20354d}
+
+/* TOP HEADER */
+.top-header{
+    height:70px;background:#174B7A;color:white;display:flex;
+    align-items:center;justify-content:space-between;padding:0 28px 0 24px;
+    position:fixed;top:0;left:0;right:0;z-index:1000;
+    box-shadow:0 3px 12px rgba(0,0,0,.12)
+}
+.header-left{display:flex;align-items:center;gap:14px}
+.menu-toggle{
+    width:42px;height:42px;border:0;border-radius:10px;
+    background:rgba(255,255,255,.12);color:white;font-size:23px;cursor:pointer
+}
+.header-brand{font-size:24px;font-weight:800}
+.header-brand span{color:#F2C94C}
+.header-title{font-size:16px;font-weight:700;opacity:.92}
+.header-right{display:flex;align-items:center;gap:16px}
+.notification-menu{position:relative}
+.bell-btn{position:relative;width:42px;height:42px;border:0;border-radius:10px;background:rgba(255,255,255,.12);color:white;cursor:pointer;display:flex;align-items:center;justify-content:center}.bell-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.header-badge{position:absolute;right:-5px;top:-6px;min-width:20px;height:20px;padding:2px 5px;border-radius:20px;background:#F2C94C;color:#174B7A;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;border:2px solid #174B7A}
+.notification-dropdown{display:none;position:absolute;right:0;top:52px;width:350px;max-width:calc(100vw - 28px);background:white;color:#222;border-radius:14px;box-shadow:0 12px 35px rgba(0,0,0,.18);overflow:hidden;border:1px solid rgba(10,52,114,.12)}
+.notification-dropdown.show{display:block}
+.notification-dropdown-head{display:flex;align-items:center;justify-content:space-between;padding:15px 16px;border-bottom:1px solid #edf0f4;color:#174B7A}
+.notification-dropdown-head a{color:#174B7A;text-decoration:none;font-size:13px;font-weight:800}
+.notification-item{display:flex;flex-direction:column;gap:4px;padding:13px 16px;text-decoration:none;color:#26354a;border-bottom:1px solid #f0f2f5}
+.notification-item:hover{background:#F5F8FC}
+.notification-item.unread{border-left:4px solid #F2C94C;background:#fffdf3}
+.notification-item strong{color:#174B7A;font-size:14px}
+.notification-item span{font-size:13px;line-height:1.35;color:#5f6b7a}
+.notification-item small{font-size:11px;color:#8a93a0}
+.notification-empty{padding:28px 16px;text-align:center;color:#718096}
+
+/* SIDEBAR */
+.sidebar{
+    position:fixed;top:70px;left:0;bottom:0;width:285px;
+    background:#174B7A;color:white;padding:24px 16px 18px;z-index:900;
+    display:flex;flex-direction:column;transition:transform .25s ease;transform:translateX(-100%);
+    box-shadow:4px 0 18px rgba(0,0,0,.12)
+}
+.sidebar-brand{
+    padding:0 10px 20px;border-bottom:1px solid rgba(255,255,255,.18);
+    margin-bottom:16px
+}
+.sidebar-brand h2{font-size:29px;font-weight:800}
+.sidebar-brand h2 span{color:#F2C94C}
+.sidebar-brand p{font-size:13px;opacity:.78;margin-top:2px}
+.nav{display:flex;flex-direction:column;gap:7px}
+.nav a{
+    display:flex;align-items:center;gap:14px;color:white;text-decoration:none;
+    padding:14px 15px;border-radius:11px;font-size:16px;font-weight:700;transition:.2s
+}
+.nav a:hover,.nav a.active{background:#F2C94C;color:#123e75}
+.nav-icon{width:25px;text-align:center;font-size:21px}
+.sidebar-bottom{margin-top:auto;border-top:1px solid rgba(255,255,255,.18);padding-top:16px}
+.profile-card{background:rgba(255,255,255,.10);border-radius:13px;padding:13px 14px;margin-bottom:10px}
+.profile-link{color:white;text-decoration:none;display:flex;align-items:center;gap:11px}
+.profile-avatar{
+    width:39px;height:39px;border-radius:50%;background:#F2C94C;color:#174B7A;
+    display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;flex:none
+}
+.profile-info{min-width:0}
+.profile-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.profile-id{font-size:12px;opacity:.78;margin-top:2px}
+.user-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.user-actions a{
+    text-decoration:none;display:flex;justify-content:center;align-items:center;
+    gap:7px;padding:11px 8px;border-radius:9px;font-weight:800;font-size:13px
+}
+.profile-action{background:white;color:#174B7A}
+.logout-action{background:#d32f2f;color:white}
+.logout-action:hover{background:#b71c1c}
+
+/* MAIN */
+.main{margin-left:0;padding:100px 34px 35px;min-height:100vh;transition:margin-left .25s ease, padding .25s ease;background:rgba(252,249,240,.12)}
+body.sidebar-open .sidebar{transform:translateX(0)}
+body.sidebar-open .main{margin-left:285px}
+.content{max-width:1180px;margin:0 auto}
+.welcome-row{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}
+.welcome-title{font-size:34px;font-weight:800;color:#174B7A}
+.welcome-sub{color:#667085;margin-top:5px}
+.dark-mode{background:rgba(255,255,255,.88);border:1px solid rgba(23,75,143,.12);border-radius:12px;padding:12px 16px;color:#2F6F9F;font-weight:800;box-shadow:0 4px 14px rgba(23,75,143,.10);cursor:pointer}
+
+/* DARK MODE */
+body.dark{background:#0b1726 !important;color:#eaf2fb !important;background-image:linear-gradient(rgba(7,18,31,.82),rgba(7,18,31,.82)),url('/static/bg.jpg') !important;background-size:cover;background-position:center;background-attachment:fixed}
+body.dark .top-header{background:linear-gradient(90deg,#071d35,#123e68) !important;border-bottom-color:rgba(242,201,76,.35)}
+body.dark .sidebar{background:linear-gradient(180deg,#081f38 0%,#0b2c4d 70%,#071b30 100%) !important}
+body.dark .main{background:rgba(7,18,31,.28) !important}
+body.dark .welcome-title,body.dark .panel-title,body.dark .quick-title,body.dark .stat-number{color:#F2C94C !important}
+body.dark .welcome-sub,body.dark .stat-label,body.dark .empty{color:#b9c9da !important}
+body.dark .stat-card,body.dark .panel,body.dark .quick-panel{background:rgba(17,35,54,.88) !important;border-color:rgba(242,201,76,.18) !important;box-shadow:0 8px 24px rgba(0,0,0,.28) !important}
+body.dark .panel-link,body.dark .quick-btn{background:#174B7A !important;color:#fff !important}
+body.dark .quick-btn.yellow{background:#F2C94C !important;color:#10243b !important}
+body.dark .dark-mode{background:#F2C94C !important;color:#10243b !important;border-color:#F2C94C !important}
+body.dark .notification-dropdown{background:#112336 !important;color:#eaf2fb !important;border-color:rgba(242,201,76,.2) !important}
+body.dark .notification-dropdown-head,body.dark .notification-item{border-color:rgba(255,255,255,.10) !important}
+body.dark .notification-item strong{color:#F2C94C !important}
+body.dark .notification-item span,body.dark .notification-item small{color:#b9c9da !important}
+body.dark .menu-toggle{background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%) !important}
+.profile-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(242,201,76,.75),rgba(255,255,255,.22),transparent);margin:16px 0 14px}
+
+
+/* STATS */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-bottom:22px}
+.stat-card{background:rgba(255,255,255,.90);border-radius:16px;padding:21px 22px;border:1px solid rgba(23,75,143,.10);box-shadow:0 6px 20px rgba(23,75,143,.10);backdrop-filter:blur(6px)}
+.stat-icon{font-size:24px;margin-bottom:9px}
+.stat-number{font-size:30px;line-height:1;font-weight:800;color:#174B7A}
+.stat-label{color:#667085;margin-top:7px;font-size:14px;font-weight:600}
+
+/* PANELS */
+.panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;margin-bottom:20px}
+.panel{background:rgba(255,255,255,.90);border-radius:17px;padding:22px;box-shadow:0 6px 20px rgba(23,75,143,.10);backdrop-filter:blur(6px)}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:14px}
+.panel-title{font-size:21px;font-weight:800;color:#174B7A}
+.panel-link{
+    background:#174B7A;color:white;text-decoration:none;padding:9px 13px;
+    border-radius:9px;font-size:13px;font-weight:800
+}
+.empty{color:#718096;padding:15px 0 3px}
+
+/* QUICK ACTIONS */
+.quick-panel{background:rgba(255,255,255,.92);border-radius:17px;padding:22px;box-shadow:0 6px 20px rgba(23,75,143,.10);backdrop-filter:blur(6px)}
+.quick-title{color:#174B7A;font-size:21px;font-weight:800;margin-bottom:15px}
+.quick-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:13px}
+.quick-btn{
+    display:flex;align-items:center;justify-content:center;min-height:50px;
+    padding:12px;border-radius:10px;background:#174B7A;color:white;
+    text-decoration:none;font-weight:800;transition:.2s
+}
+.quick-btn:hover{background:#08295c;transform:translateY(-1px)}
+.quick-btn.yellow{background:#F2C94C;color:#222}
+.quick-btn.yellow:hover{background:#DDB43A}
+.badge-wrap{position:relative}
+.badge{
+    position:absolute;top:-8px;right:-8px;min-width:21px;height:21px;padding:2px 6px;
+    border-radius:20px;background:#d32f2f;color:white;font-size:11px;
+    display:flex;align-items:center;justify-content:center;border:2px solid white
 }
 
-.top-btn {
-    position:relative;
-    text-decoration:none;
-    color:#0a3472;
-    background:white;
-    padding:12px 16px;
-    border-radius:12px;
-    font-weight:700;
-    box-shadow:0 2px 8px rgba(0,0,0,.08);
+/* MOBILE */
+@media(max-width:900px){
+    body{background-attachment:scroll}
+    body.sidebar-open .main{margin-left:285px}
+    .panel-grid{grid-template-columns:1fr}
 }
-
-.logout-btn {
-    background:#d32f2f;
-    color:white;
+@media(max-width:760px){
+    body.sidebar-open .main{margin-left:0}
+    .main{padding:92px 16px 25px}
+    .top-header{padding:0 14px}
+    .header-title{display:none}
+    .welcome-row{align-items:flex-start;flex-direction:column}
+    .welcome-title{font-size:29px}
+    .stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+    .stat-card{padding:17px}
+    .quick-grid{grid-template-columns:1fr}
 }
-
-.logout-btn:hover {
-    background:#b71c1c;
-}
-
-.badge {
-    position:absolute;
-    top:-7px;
-    right:-7px;
-    min-width:22px;
-    height:22px;
-    padding:2px 6px;
-    border-radius:20px;
-    background:#ef4444;
-    color:white;
-    font-size:12px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-}
-
-.welcome-section {
-    max-width:1000px;
-    min-height:230px;
-    margin:0 auto 22px;
-    background-image:
-        linear-gradient(rgba(10,52,114,.55), rgba(10,52,114,.55)),
-        url('/static/bg.jpg');
-    background-size:cover;
-    background-position:center;
-    background-repeat:no-repeat;
-    border-radius:20px;
-    padding:35px 45px;
-    display:flex;
-    flex-direction:column;
-    justify-content:center;
-    color:white;
-    box-shadow:0 5px 20px rgba(0,0,0,.12);
-}
-
-.welcome {
-    font-size:38px;
-    font-weight:800;
-    line-height:1.15;
-    margin-bottom:12px;
-}
-
-.encourage { font-size:20px; color:white; }
-
-.menu-grid {
-    max-width:1000px;
-    margin:0 auto;
-    display:grid;
-    grid-template-columns:repeat(4, 1fr);
-    gap:15px;
-}
-
-.menu-item {
-    font-size:18px;
-    padding:17px 16px;
-    display:flex;
-    align-items:center;
-    gap:12px;
-    color:#111;
-    text-decoration:none;
-    background:white;
-    border-radius:14px;
-    transition:.2s;
-    box-shadow:0 2px 10px rgba(0,0,0,.06);
-}
-
-.menu-item:hover {
-    color:#0a3472;
-    transform:translateY(-2px);
-}
-
-.icon { font-size:28px; }
-
-.logout {
-    display:block;
-    max-width:1000px;
-    margin:35px auto 0;
-    font-size:16px;
-    color:#d32f2f;
-    text-decoration:none;
-    font-weight:600;
-}
-
-@media(max-width:900px) {
-    .menu-grid { grid-template-columns:repeat(2, 1fr); }
-}
-
-@media(max-width:600px) {
-    body { padding:15px; }
-    .welcome-section { padding:28px; min-height:210px; }
-    .welcome { font-size:32px; }
-    .encourage { font-size:16px; }
-    .menu-grid { grid-template-columns:1fr 1fr; gap:10px; }
-    .menu-item { font-size:16px; padding:14px 12px; }
-    .icon { font-size:23px; }
+@media(max-width:480px){
+    .stats{grid-template-columns:1fr}
+    .welcome-title{font-size:26px}
+    .content{width:100%}
 }
 </style>
 </head>
+
 <body>
+<header class="top-header">
+    <div class="header-left">
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" aria-expanded="false">☰</button>
+        <div class="header-brand">StudyMate <span>PH</span></div>
+    </div>
+    <div class="header-right">
+        <div class="notification-menu">
+            <button class="bell-btn" type="button" onclick="toggleNotificationMenu()" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>{% if unread_count > 0 %}<span class="header-badge">{{ unread_count }}</span>{% endif %}</button>
+            <div class="notification-dropdown" id="notificationDropdown">
+                <div class="notification-dropdown-head"><strong>Notifications</strong><a href="/notifications">View All</a></div>
+                {% if recent_notifications %}
+                    {% for n in recent_notifications %}
+                    <a class="notification-item {% if not n.get('read',False) %}unread{% endif %}" href="/notifications">
+                        <strong>{{ n.get('title','Notification') }}</strong>
+                        <span>{{ n.get('message','') }}</span>
+                        <small>{{ n.get('date','') }}</small>
+                    </a>
+                    {% endfor %}
+                {% else %}
+                    <div class="notification-empty">🔕 No notifications yet.</div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="header-title">Dashboard</div>
+    </div>
+</header>
 
-<div class="topbar">
-    <a href="/dashboard" class="top-btn">🏠 Dashboard</a>
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+        <h2>StudyMate <span>PH</span></h2>
+        <p>Student Hub</p>
+    </div>
 
-    <a href="/notifications" class="top-btn">
-        🔔 Notifications
-        {% if unread_count > 0 %}
-        <span class="badge">{{ unread_count }}</span>
-        {% endif %}
-    </a>
+    <nav class="nav">
+        <a href="/dashboard" class="active"><span class="nav-icon">🏠</span><span>Dashboard</span></a>
+        <a href="/schedule"><span class="nav-icon">📅</span><span>Class Schedule</span></a>
+        <a href="/deadlines"><span class="nav-icon">📝</span><span>Deadlines</span></a>
+        <a href="/group-projects"><span class="nav-icon">👥</span><span>Group Projects</span></a>
+        <a href="/profile"><span class="nav-icon">⚙️</span><span>Settings</span></a>
+        <a href="/notes"><span class="nav-icon">📚</span><span>Notes</span></a>
+        <a href="/notifications" class="badge-wrap">
+            <span class="nav-icon">🔔</span><span>Notifications</span>
+            {% if unread_count > 0 %}<span class="badge">{{ unread_count }}</span>{% endif %}
+        </a>
+    </nav>
 
-    <a href="/profile" class="top-btn">👤 Profile</a>
+    <div class="sidebar-bottom">
+        <div class="profile-divider"></div>
+        <div class="profile-card">
+            <a href="/profile" class="profile-link">
+                <div class="profile-avatar">👤</div>
+                <div class="profile-info">
+                    <div class="profile-name">{{ user_name }}</div>
+                    <div class="profile-id">ID: {{ user_id }}</div>
+                </div>
+            </a>
+        </div>
 
-    <a href="/logout" class="top-btn logout-btn">↪ Logout</a>
+        <div class="user-actions">
+            <a href="/profile" class="profile-action">👤 Profile</a>
+            <a href="/logout" class="logout-action">↪ Logout</a>
+        </div>
+    </div>
+</aside>
+
+<main class="main">
+<div class="content">
+
+    <div class="welcome-row">
+        <div>
+            <h1 class="welcome-title">Welcome, {{ user_name }}! 👋</h1>
+            <p class="welcome-sub">Keep going! You're doing great!</p>
+        </div>
+        <button class="dark-mode" onclick="toggleDarkMode()">🌙 Dark Mode</button>
+    </div>
+
+    <section class="stats">
+        <div class="stat-card">
+            <div class="stat-icon">📅</div>
+            <div class="stat-number">{{ upcoming_classes }}</div>
+            <div class="stat-label">Upcoming Classes</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">📝</div>
+            <div class="stat-number">{{ pending_deadlines }}</div>
+            <div class="stat-label">Pending Deadlines</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">👥</div>
+            <div class="stat-number">{{ group_projects }}</div>
+            <div class="stat-label">Group Projects</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">✅</div>
+            <div class="stat-number">{{ completed_tasks }}</div>
+            <div class="stat-label">Completed Tasks</div>
+        </div>
+    </section>
+
+    <section class="panel-grid">
+        <div class="panel">
+            <div class="panel-head">
+                <h2 class="panel-title">📝 Upcoming Deadlines</h2>
+                <a href="/deadlines" class="panel-link">View All</a>
+            </div>
+            {% if pending_deadlines > 0 %}
+            <p class="empty">You have {{ pending_deadlines }} pending deadline{{ 's' if pending_deadlines != 1 else '' }}. Check Deadlines to view the details.</p>
+            {% else %}
+            <p class="empty">No pending deadlines. You're all caught up! 🎉</p>
+            {% endif %}
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h2 class="panel-title">👥 My Group Projects</h2>
+                <a href="/group-projects" class="panel-link">Open</a>
+            </div>
+            {% if group_projects > 0 %}
+            <p class="empty">You are currently part of {{ group_projects }} group project{{ 's' if group_projects != 1 else '' }}.</p>
+            {% else %}
+            <p class="empty">No group projects yet.</p>
+            {% endif %}
+        </div>
+    </section>
+
+    <section class="quick-panel">
+        <h2 class="quick-title">⚡ Quick Actions</h2>
+        <div class="quick-grid">
+            <a href="/schedule" class="quick-btn">📅 Class Schedule</a>
+            <a href="/deadlines" class="quick-btn">+ Add Deadline</a>
+            <a href="/group-projects" class="quick-btn">+ Group Project</a>
+            <a href="/notes" class="quick-btn yellow">📝 Notes</a>
+            <a href="/notifications" class="quick-btn">🔔 Notifications{% if unread_count > 0 %} ({{ unread_count }}){% endif %}</a>
+            <a href="/profile" class="quick-btn">⚙️ Settings</a>
+        </div>
+    </section>
+
 </div>
+</main>
 
-<div class="welcome-section">
-    <h1 class="welcome">Welcome,<br>{{ user_name }}!</h1>
-    <p class="encourage">Keep going! You're doing great!</p>
-</div>
+<script>
+function toggleNotificationMenu(){
+    const dropdown=document.getElementById('notificationDropdown');
+    if(dropdown) dropdown.classList.toggle('show');
+}
+document.addEventListener('click',function(e){
+    const menu=document.querySelector('.notification-menu');
+    const dropdown=document.getElementById('notificationDropdown');
+    if(menu && dropdown && !menu.contains(e.target)) dropdown.classList.remove('show');
+});
 
-<div class="menu-grid">
-    <a href="/schedule" class="menu-item"><span class="icon">📅</span> Schedule</a>
-    <a href="/deadlines" class="menu-item"><span class="icon">⏰</span> Deadlines</a>
-    <a href="/group-projects" class="menu-item"><span class="icon">👥</span> Group Projects</a>
-    <a href="/notes" class="menu-item"><span class="icon">📝</span> Notes</a>
-</div>
+function toggleSidebar(){
+    document.body.classList.toggle('sidebar-open');
+    const btn = document.querySelector('.menu-toggle');
+    const opened = document.body.classList.contains('sidebar-open');
+    if(btn){
+        btn.textContent = opened ? '✕' : '☰';
+        btn.setAttribute('aria-expanded', opened ? 'true' : 'false');
+        btn.setAttribute('aria-label', opened ? 'Close menu' : 'Open menu');
+    }
+}
+
+function toggleDarkMode(){
+    const dark = document.body.classList.toggle('dark');
+    localStorage.setItem('studymate_dark_mode', dark ? '1' : '0');
+    const btn = document.querySelector('.dark-mode');
+    if(btn) btn.textContent = dark ? '☀️ Light Mode' : '🌙 Dark Mode';
+}
+(function(){
+    const dark = localStorage.getItem('studymate_dark_mode') === '1';
+    if(dark) document.body.classList.add('dark');
+    const btn = document.querySelector('.dark-mode');
+    if(btn) btn.textContent = dark ? '☀️ Light Mode' : '🌙 Dark Mode';
+})();
+
+document.querySelectorAll('.sidebar a').forEach(function(link){
+    link.addEventListener('click', function(){
+        if(window.innerWidth <= 760){
+            document.body.classList.remove('sidebar-open');
+        }
+    });
+});
+</script>
 
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
-
 
 
 # === PROFILE ===
@@ -627,21 +1090,21 @@ def deadlines():
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#26354a}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed;color:#20354d}
 .container{max-width:1100px;margin:35px auto;padding:0 20px}
 .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-.back{color:#315f9e;text-decoration:none;font-weight:600}
+.back{color:#174B7A;text-decoration:none;font-weight:600}
 h1{margin:0 0 5px;font-size:32px}.subtitle{color:#718096;margin:0}
-.add-btn,.primary{background:#315f9e;color:white;border:0;border-radius:10px;padding:12px 18px;cursor:pointer;font-weight:700}
-.card{background:white;border-radius:16px;padding:20px;margin-bottom:18px;box-shadow:0 4px 18px rgba(0,0,0,.07)}
+.add-btn,.primary{background:#2F6F9F;color:white;border:0;border-radius:10px;padding:12px 18px;cursor:pointer;font-weight:700}
+.card{background:rgba(255,255,255,.91);border-radius:16px;padding:20px;margin-bottom:18px;box-shadow:0 6px 20px rgba(23,75,143,.10);backdrop-filter:blur(6px)}
 .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d9e0ea;border-radius:9px;font:inherit}
 textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 .form-actions,.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .secondary,.btn{border:0;border-radius:8px;padding:9px 12px;cursor:pointer;font-weight:600}
-.secondary{background:#edf2f7;color:#334155}
+.secondary{background:#EAF3FA;color:#294765}
 .filters{display:grid;grid-template-columns:1.5fr 1fr 1fr auto;gap:10px}
-.deadline{border-left:6px solid #5790cf;padding:17px 18px}
+.deadline{border-left:6px solid #5A8DB5;padding:17px 18px}
 .deadline.overdue{border-left-color:#d9534f}.deadline.soon{border-left-color:#e69a27}
 .deadline.completed{border-left-color:#45a66b;opacity:.82}
 .deadline-head{display:flex;justify-content:space-between;gap:15px}
@@ -649,13 +1112,42 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 .title{font-size:21px;font-weight:800;margin:4px 0}.meta{color:#667085;margin:7px 0}
 .badge{display:inline-block;padding:5px 9px;border-radius:20px;background:#edf2f7;font-size:12px;font-weight:700}
 .status-overdue{background:#fde7e7;color:#b42318}.status-soon{background:#fff0d7;color:#9a6700}
-.status-completed{background:#e6f7ec;color:#147a3e}.status-upcoming{background:#e8f1fc;color:#245d9c}
+.status-completed{background:#e6f7ec;color:#147a3e}.status-upcoming{background:#e4effa;color:#245d9c}
 .done{background:#e7f7ed;color:#18713c}.edit{background:#eaf1fb;color:#285c96}.delete{background:#fde8e8;color:#b42318}
 .empty{text-align:center;padding:40px 15px;color:#718096}
 @media(max-width:750px){.top{align-items:flex-start;gap:15px;flex-direction:column}.form-grid,.filters{grid-template-columns:1fr}.full{grid-column:auto}}
+
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
+function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
+</script>
+
 <div class="container">
 <a href="/dashboard" class="back">← Back to Dashboard</a>
 <div class="top">
@@ -672,7 +1164,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 <select name="category" required>{% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
 <input type="date" name="due_date" required>
 <input type="time" name="due_time" required>
-<label style="grid-column:1/-1;font-weight:700;color:#315f9e;">⏰ Alarm / Reminder (Optional)</label>
+<label style="grid-column:1/-1;font-weight:700;color:#174B7A;">⏰ Alarm / Reminder (Optional)</label>
 <input type="date" name="alarm_date" title="Alarm Date">
 <input type="time" name="alarm_time" title="Alarm Time">
 <textarea class="full" name="description" placeholder="Description / notes (optional)"></textarea>
@@ -722,6 +1214,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 {% endif %}
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>
 """, categories=categories, filtered=filtered, category=category,
@@ -848,8 +1341,8 @@ body{font-family:Arial,sans-serif;background:#f5f7fb;margin:0;color:#26354a}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 input,select,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #d9e0ea;border-radius:9px;font:inherit}
 textarea{min-height:100px;grid-column:1/-1}
-button{padding:11px 18px;border:0;border-radius:9px;background:#315f9e;color:white;font-weight:700;cursor:pointer}
-a{color:#315f9e;text-decoration:none}
+button{padding:11px 18px;border:0;border-radius:9px;background:#174B7A;color:white;font-weight:700;cursor:pointer}
+a{color:#174B7A;text-decoration:none}
 @media(max-width:650px){.grid{grid-template-columns:1fr}textarea{grid-column:auto}}
 </style></head>
 <body><div class="box"><a href="/deadlines">← Back to Deadlines</a>
@@ -864,6 +1357,7 @@ a{color:#315f9e;text-decoration:none}
 <input type="time" name="alarm_time" value="{{ d.get('alarm_time','') }}">
 <textarea name="description" placeholder="Description / notes">{{ d.description }}</textarea>
 </div><br><button type="submit">Save Changes</button></form></div><script src="/static/alarm.js"></script>
+
 </body></html>
 """, d=target, categories=categories)
 
@@ -996,26 +1490,55 @@ NOTES_HTML = r'''<!DOCTYPE html>
 <title>Notes - StudyMate PH</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif}
-body{margin:0;background:#f7f8fc;color:#26354a;padding:30px}
+body{margin:0;background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed;color:#20354d;padding:30px}
 .container{max-width:1100px;margin:auto}
 .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-.back{color:#0a3472;text-decoration:none;font-weight:700}
-h1{color:#0a3472;margin:8px 0}.sub{color:#718096}
+.back{color:#174B7A;text-decoration:none;font-weight:700}
+h1{color:#174B7A;margin:8px 0}.sub{color:#718096}
 .grid{display:grid;grid-template-columns:330px 1fr;gap:20px}
 .card{background:white;border-radius:18px;padding:22px;box-shadow:0 4px 18px rgba(0,0,0,.07);margin-bottom:18px}
 input,select,textarea{width:100%;padding:11px;border:1px solid #d6dce5;border-radius:9px;margin:7px 0;font-size:15px}
 textarea{min-height:150px;resize:vertical}
 button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-weight:700;text-decoration:none;display:inline-block}
-.primary{background:#315f9e;color:white}.yellow{background:#f9c80e;color:#222}.danger{background:#fde8e8;color:#b42318}.gray{background:#eef2f7;color:#344054}
-.note{border-left:5px solid #315f9e}.note.pinned{border-left-color:#f9c80e}
-.note h2{margin:0 0 5px;color:#0a3472}.meta{color:#718096;font-size:13px;margin:5px 0}
+.primary{background:#174B7A;color:white}.yellow{background:#F2C94C;color:#222}.danger{background:#fde8e8;color:#b42318}.gray{background:#eef2f7;color:#344054}
+.note{border-left:5px solid #2F6F9F}.note.pinned{border-left-color:#F2C94C}
+.note h2{margin:0 0 5px;color:#174B7A}.meta{color:#718096;font-size:13px;margin:5px 0}
 .content{white-space:pre-wrap;line-height:1.55;margin:14px 0}
 .actions{display:flex;gap:7px;flex-wrap:wrap}
 .empty{text-align:center;color:#718096;padding:35px}
 @media(max-width:800px){.grid{grid-template-columns:1fr}body{padding:15px}}
+
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
+function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
+</script>
+
 <div class="container">
 <div class="top">
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;">
@@ -1077,6 +1600,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 </div>
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
 
@@ -1089,12 +1613,12 @@ NOTE_EDIT_HTML = r'''<!DOCTYPE html>
 <title>Edit Note - StudyMate PH</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif}
-body{margin:0;background:#f7f8fc;padding:30px}
+body{margin:0;background:linear-gradient(rgba(226,239,250,.78),rgba(242,247,252,.90)),url('/static/bg.jpg') center/cover fixed;padding:30px}
 .card{max-width:700px;margin:30px auto;background:white;padding:30px;border-radius:18px;box-shadow:0 4px 18px rgba(0,0,0,.08)}
 input,select,textarea{width:100%;padding:12px;border:1px solid #d6dce5;border-radius:9px;margin:7px 0 15px;font-size:15px}
 textarea{min-height:220px}
-button{padding:12px 18px;border:0;border-radius:25px;background:#f9c80e;font-weight:800;cursor:pointer}
-a{color:#0a3472;font-weight:700;text-decoration:none;margin-left:12px}
+button{padding:12px 18px;border:0;border-radius:25px;background:#F2C94C;font-weight:800;cursor:pointer}
+a{color:#174B7A;font-weight:700;text-decoration:none;margin-left:12px}
 </style>
 </head>
 <body>
@@ -1118,6 +1642,7 @@ a{color:#0a3472;font-weight:700;text-decoration:none;margin-left:12px}
 </form>
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
 
@@ -1146,28 +1671,57 @@ def group_projects():
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#26354a}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed;color:#20354d}
 .container{max-width:1100px;margin:35px auto;padding:0 20px}
-.back{color:#315f9e;text-decoration:none;font-weight:600}
+.back{color:#174B7A;text-decoration:none;font-weight:600}
 h1{margin:10px 0 5px;font-size:32px}.subtitle{color:#718096;margin:0 0 22px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-.card{background:white;border-radius:16px;padding:22px;box-shadow:0 4px 18px rgba(0,0,0,.07);margin-bottom:18px}
-.card h2{margin-top:0;color:#0a3472}
+.card{background:rgba(255,255,255,.91);border-radius:16px;padding:22px;box-shadow:0 6px 20px rgba(23,75,143,.10);margin-bottom:18px;backdrop-filter:blur(6px)}
+.card h2{margin-top:0;color:#174B7A}
 input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d9e0ea;border-radius:9px;font:inherit;margin-bottom:10px}
 textarea{min-height:85px;resize:vertical}
 button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-weight:700;text-decoration:none;display:inline-block}
-.primary{background:#315f9e;color:white}.join{background:#f0b90b;color:#26354a}
-.project{border-left:6px solid #315f9e}
+.primary{background:#2F6F9F;color:white}.join{background:#F2C94C;color:#20354d}
+.project{border-left:6px solid #2F6F9F}
 .project h3{margin:0 0 5px;font-size:21px}
 .meta{color:#667085;margin:6px 0}
-.code{font-weight:800;letter-spacing:2px;background:#edf3fb;padding:5px 9px;border-radius:7px}
-.progress{height:10px;background:#e7edf5;border-radius:10px;overflow:hidden;margin:10px 0}
-.progress-bar{height:100%;background:#315f9e}
+.code{font-weight:800;letter-spacing:2px;background:#EDF5FB;padding:5px 9px;border-radius:7px}
+.progress{height:10px;background:#EAF1F7;border-radius:10px;overflow:hidden;margin:10px 0}
+.progress-bar{height:100%;background:#2F6F9F}
 .empty{text-align:center;color:#718096;padding:30px}
 @media(max-width:800px){.grid{grid-template-columns:1fr}}
+
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
+function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
+</script>
+
 <div class="container">
 <a href="/dashboard" class="back">← Back to Dashboard</a>
 <h1>👥 Group Projects</h1>
@@ -1180,7 +1734,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 <input name="name" placeholder="Group Project Name" required>
 <input name="subject" placeholder="Subject" required>
 <input type="date" name="deadline">
-<label style="font-weight:700;color:#315f9e;">⏰ Alarm / Reminder (Optional)</label>
+<label style="font-weight:700;color:#174B7A;">⏰ Alarm / Reminder (Optional)</label>
 <input type="date" name="alarm_date">
 <input type="time" name="alarm_time">
 <textarea name="description" placeholder="Project description"></textarea>
@@ -1223,6 +1777,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 {% endif %}
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>
 """, my_groups=my_groups)
@@ -1257,6 +1812,7 @@ def create_group_project():
         "tasks": [],
         "notes": [],
         "meetings": [],
+        "files": [],
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1370,30 +1926,64 @@ def group_project_detail(group_id):
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#26354a}
+body{margin:0;font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed;color:#20354d}
 .container{max-width:1100px;margin:30px auto;padding:0 20px}
-.back{color:#315f9e;text-decoration:none;font-weight:600}
-.hero{background:#315f9e;color:white;padding:25px;border-radius:18px;margin:15px 0 20px}
+.back{color:#174B7A;text-decoration:none;font-weight:600}
+.hero{background:linear-gradient(135deg,#174B7A,#2F6F9F);color:white;padding:25px;border-radius:18px;margin:15px 0 20px}
 .hero h1{margin:0 0 7px}.hero p{margin:5px 0}
-.code{background:white;color:#315f9e;padding:5px 10px;border-radius:7px;font-weight:800;letter-spacing:2px}
+.code{background:white;color:#174B7A;padding:5px 10px;border-radius:7px;font-weight:800;letter-spacing:2px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-.card{background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);margin-bottom:18px}
-.card h2{margin-top:0;color:#0a3472}
+.card{background:rgba(255,255,255,.91);border-radius:16px;padding:20px;box-shadow:0 6px 20px rgba(23,75,143,.10);margin-bottom:18px;backdrop-filter:blur(6px)}
+.card h2{margin-top:0;color:#174B7A}
 input,select,textarea{width:100%;padding:10px;border:1px solid #d9e0ea;border-radius:8px;font:inherit;margin-bottom:9px}
 textarea{min-height:80px}
-button{border:0;border-radius:8px;padding:9px 13px;background:#315f9e;color:white;font-weight:700;cursor:pointer}
+button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:white;font-weight:700;cursor:pointer}
 .task{padding:12px;border:1px solid #e2e8f0;border-radius:10px;margin:8px 0}
 .task.done{background:#eef9f1;text-decoration:line-through;opacity:.8}
 .small{font-size:13px;color:#718096}
-.progress{height:12px;background:#e7edf5;border-radius:10px;overflow:hidden}
-.bar{height:100%;background:#315f9e}
+.progress{height:12px;background:#EAF1F7;border-radius:10px;overflow:hidden}
+.bar{height:100%;background:#2F6F9F}
 .note,.meeting{padding:10px;border-bottom:1px solid #e5e7eb}
 .member{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #edf0f4}
 .danger{background:#fde8e8;color:#b42318}
-@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.upload-form{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.upload-form input[type=file]{flex:1;min-width:220px;margin-bottom:0}
+.file-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #e5e7eb}
+.file-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.file-download{display:inline-block;padding:9px 12px;border-radius:8px;background:#F2C94C;color:#222;text-decoration:none;font-weight:800}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.file-row{align-items:flex-start;flex-direction:column}.file-actions{width:100%}}
+
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
+function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
+</script>
+
 <div class="container">
 <a class="back" href="/group-projects">← Back to Group Projects</a>
 
@@ -1471,6 +2061,23 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#315f9e;color:whit
 </div>
 
 <div class="card">
+<h2>📎 Group Files</h2>
+<p class="small">Send PowerPoint, pictures, videos, PDFs, documents, spreadsheets, ZIP/RAR and other supported files (up to 100 MB each).</p>
+<form method="POST" action="/group-projects/{{ group.id }}/files/upload" enctype="multipart/form-data" class="upload-form">
+<input type="file" name="file" accept=".ppt,.pptx,.pps,.ppsx,.jpg,.jpeg,.png,.gif,.webp,.mp4,.mov,.avi,.mkv,.webm,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar" required>
+<button type="submit">📤 Send File</button>
+</form>
+{% for f in group_files %}
+<div class="file-row">
+<div><b>📄 {{ f.original_name }}</b><div class="small">Uploaded by {{ f.uploader_name }} · {{ f.date }} · {{ (f.size / 1024 / 1024)|round(2) }} MB</div></div>
+<div class="file-actions"><a class="file-download" href="/group-projects/{{ group.id }}/files/{{ f.id }}/download">⬇ Download</a>{% if user_id == f.uploader_id or user_id == group.leader_id %}<form method="POST" action="/group-projects/{{ group.id }}/files/{{ f.id }}/delete" onsubmit="return confirm('Delete this file?');"><button class="danger" type="submit">🗑 Delete</button></form>{% endif %}</div>
+</div>
+{% else %}
+<div class="empty">No files shared yet.</div>
+{% endfor %}
+</div>
+
+<div class="card">
 <h2>📅 Meetings</h2>
 <form method="POST" action="/group-projects/{{ group.id }}/meetings/add">
 <input name="title" placeholder="Meeting title" required>
@@ -1488,19 +2095,20 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#315f9e;color:whit
 <div class="card">
 <h2>🔐 Group Code</h2>
 <p>Only students who know both the exact group name and this code can join through the Join Group form.</p>
-<p style="font-size:24px;font-weight:800;letter-spacing:4px;color:#315f9e">{{ group.code }}</p>
+<p style="font-size:24px;font-weight:800;letter-spacing:4px;color:#174B7A">{{ group.code }}</p>
 </div>
 {% endif %}
 </div>
 </div>
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>
 """, group=group, members=members, tasks=[
         dict(t, assigned_name=get_user_name(t.get("assigned_to")))
         for t in tasks
-    ], progress=progress, user_id=user_id)
+    ], progress=progress, user_id=user_id, group_files=group.get('files', []))
 
 
 def require_group_member(group_id):
@@ -1666,6 +2274,85 @@ def add_group_meeting(group_id):
     return redirect(url_for("group_project_detail", group_id=group_id))
 
 
+@app.route('/group-projects/<group_id>/files/upload', methods=['POST'])
+def upload_group_file(group_id):
+    result, error = require_group_member(group_id)
+    if error:
+        return error
+    groups, group, user_id = result
+    uploaded = request.files.get('file')
+    if not uploaded or not uploaded.filename:
+        return "No file selected.", 400
+
+    original_name = secure_filename(uploaded.filename)
+    if not original_name or '.' not in original_name:
+        return "Invalid file.", 400
+    extension = original_name.rsplit('.', 1)[1].lower()
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        return "File type is not allowed.", 400
+
+    group_dir = os.path.join(UPLOAD_FOLDER, str(group_id))
+    os.makedirs(group_dir, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}_{original_name}"
+    saved_path = os.path.join(group_dir, stored_name)
+    uploaded.save(saved_path)
+    size = os.path.getsize(saved_path)
+    if size > MAX_UPLOAD_SIZE:
+        os.remove(saved_path)
+        return "File is too large. Maximum size is 100 MB.", 413
+
+    group.setdefault('files', []).append({
+        'id': str(uuid.uuid4())[:8],
+        'original_name': original_name,
+        'stored_name': stored_name,
+        'size': size,
+        'uploader_id': user_id,
+        'uploader_name': get_user_name(user_id),
+        'date': datetime.now().strftime('%B %d, %Y %I:%M %p')
+    })
+    save_groups(groups)
+    notify_group_members(group, 'New Group File', f"{get_user_name(user_id)} uploaded '{original_name}' to '{group.get('name','Group Project')}'.", exclude_user_id=user_id)
+    return redirect(url_for('group_project_detail', group_id=group_id))
+
+
+@app.route('/group-projects/<group_id>/files/<file_id>/download')
+def download_group_file(group_id, file_id):
+    result, error = require_group_member(group_id)
+    if error:
+        return error
+    groups, group, user_id = result
+    target = next((f for f in group.get('files', []) if str(f.get('id')) == str(file_id)), None)
+    if not target:
+        return "File not found.", 404
+    return send_from_directory(
+        os.path.join(UPLOAD_FOLDER, str(group_id)),
+        target.get('stored_name'),
+        as_attachment=True,
+        download_name=target.get('original_name', target.get('stored_name'))
+    )
+
+
+@app.route('/group-projects/<group_id>/files/<file_id>/delete', methods=['POST'])
+def delete_group_file(group_id, file_id):
+    result, error = require_group_member(group_id)
+    if error:
+        return error
+    groups, group, user_id = result
+    target = next((f for f in group.get('files', []) if str(f.get('id')) == str(file_id)), None)
+    if not target:
+        return "File not found.", 404
+    if str(target.get('uploader_id')) != user_id and str(group.get('leader_id')) != user_id:
+        return "Only the uploader or group leader can delete this file.", 403
+
+    path = os.path.join(UPLOAD_FOLDER, str(group_id), target.get('stored_name', ''))
+    if os.path.exists(path):
+        os.remove(path)
+    group['files'] = [f for f in group.get('files', []) if str(f.get('id')) != str(file_id)]
+    save_groups(groups)
+    notify_group_members(group, 'Group File Deleted', f"{target.get('original_name','A file')} was removed from '{group.get('name','Group Project')}'.", exclude_user_id=user_id)
+    return redirect(url_for('group_project_detail', group_id=group_id))
+
+
 @app.route('/profile', methods=['GET', 'POST'])
 def profile():
     if "user_id" not in session:
@@ -1733,19 +2420,27 @@ PROFILE_HTML = r'''<!DOCTYPE html>
 <title>Profile - StudyMate PH</title>
 <style>
 * { box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
-body { margin:0; background:#fcf9f0; padding:35px; }
+body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
+.profile-top { max-width:650px; margin:0 auto 16px; display:flex; align-items:center; justify-content:space-between; min-height:42px; }
+.profile-top .back { margin:0; }
 .card { max-width:650px; margin:auto; background:white; padding:35px; border-radius:18px; box-shadow:0 4px 20px rgba(0,0,0,.08); }
-h1 { color:#0a3472; }
+h1 { color:#174B7A; }
 form { display:flex; flex-direction:column; gap:12px; }
 label { font-weight:700; }
 input { padding:13px; border:1px solid #ccc; border-radius:10px; font-size:15px; }
-.save { margin-top:10px; padding:14px; border:0; border-radius:30px; background:#f9c80e; font-weight:800; cursor:pointer; }
+body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
+.card { background:rgba(255,255,255,.91); box-shadow:0 6px 20px rgba(23,75,143,.10); backdrop-filter:blur(6px); }
+.password-wrap{position:relative}.password-wrap input{width:100%;padding-right:62px}.toggle-password{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle-password svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle-password:hover{background:transparent;opacity:.72}
+.save { margin-top:10px; padding:14px; border:0; border-radius:30px; background:#F2C94C; font-weight:800; cursor:pointer; }
 .success { padding:12px; background:#e8f7e8; color:#237b35; border-radius:8px; margin-bottom:15px; }
 .error { padding:12px; background:#ffebee; color:#c62828; border-radius:8px; margin-bottom:15px; }
-.back { display:inline-block; margin-top:20px; color:#0a3472; font-weight:700; text-decoration:none; }
+.back { display:inline-block; margin-top:20px; color:#174B7A; font-weight:700; text-decoration:none; }
 </style>
 </head>
 <body>
+<div class="profile-top">
+<a class="back" href="/dashboard">← Back to Dashboard</a>
+</div>
 <div class="card">
 <h1>👤 My Profile</h1>
 <p>Edit your StudyMate PH account information.</p>
@@ -1769,20 +2464,21 @@ input { padding:13px; border:1px solid #ccc; border-radius:10px; font-size:15px;
 <p>Leave the password fields blank if you don't want to change it.</p>
 
 <label>Current Password</label>
-<input type="password" name="old_password">
+<div class="password-wrap"><input id="oldPassword" type="password" name="old_password"><button type="button" class="toggle-password" onclick="togglePassword('oldPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div>
 
 <label>New Password</label>
-<input type="password" name="new_password">
+<div class="password-wrap"><input id="newPassword" type="password" name="new_password"><button type="button" class="toggle-password" onclick="togglePassword('newPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div>
 
 <label>Confirm New Password</label>
-<input type="password" name="confirm_password">
+<div class="password-wrap"><input id="confirmPassword" type="password" name="confirm_password"><button type="button" class="toggle-password" onclick="togglePassword('confirmPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div>
 
 <button class="save" type="submit">💾 Save Changes</button>
 </form>
 
-<a class="back" href="/dashboard">← Back to Dashboard</a>
 </div>
+<script>function eyeIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>';} function eyeOffIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.2 3.9M6.2 6.2C3.5 8.1 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 4.1-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';} function togglePassword(id,btn){const input=document.getElementById(id);if(!input||!btn)return;const show=input.type==='password';input.type=show?'text':'password';btn.innerHTML=show?eyeOffIcon():eyeIcon();btn.setAttribute('aria-label',show?'Hide password':'Show password');btn.setAttribute('title',show?'Hide password':'Show password');}</script>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
 
@@ -1815,17 +2511,46 @@ NOTIFICATIONS_HTML = r'''<!DOCTYPE html>
 <title>Notifications - StudyMate PH</title>
 <style>
 * { box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
-body { margin:0; background:#fcf9f0; padding:35px; }
+body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
 .card { max-width:800px; margin:auto; background:white; padding:35px; border-radius:18px; box-shadow:0 4px 20px rgba(0,0,0,.08); }
-h1 { color:#0a3472; }
-.notification { padding:18px; margin:12px 0; background:#f7f9fc; border-left:5px solid #0a3472; border-radius:10px; }
+h1 { color:#174B7A; }
+.notification { padding:18px; margin:12px 0; background:#f7f9fc; border-left:5px solid #174B7A; border-radius:10px; }
 .date { font-size:12px; color:#888; margin-top:8px; }
 .empty { text-align:center; color:#777; padding:40px; }
 .delete-notification { border:0; background:#fde8e8; color:#b42318; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:700; }
-.back { display:inline-block; margin-top:20px; color:#0a3472; font-weight:700; text-decoration:none; }
+.back { display:inline-block; margin-top:20px; color:#174B7A; font-weight:700; text-decoration:none; }
+
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.page-menu-toggle span{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}.page-menu-toggle span:nth-child(2){background:#F2C94C}.page-menu-toggle:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}
+.page-menu-backdrop{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}.page-sidebar{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}.page-sidebar.open{transform:translateX(0)}
+.page-sidebar-brand{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}.page-sidebar-brand h2{margin:0;font-size:27px;font-weight:800}.page-sidebar-brand h2 span{color:#F2C94C}.page-sidebar-brand p{margin:3px 0 0;font-size:12px;opacity:.78}.page-sidebar-nav{display:flex;flex-direction:column;gap:7px}.page-sidebar-nav a{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}.page-sidebar-nav .icon{width:24px;text-align:center;font-size:19px}.page-sidebar-bottom{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}.page-sidebar-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.page-sidebar-actions a{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}.page-sidebar-actions a:last-child{background:#F2C94C;color:#20354d}.page-sidebar .menu-close-note{font-size:11px;opacity:.68;margin-top:12px}.page-nav-open .page-menu-backdrop{display:block}@media(max-width:700px){.page-menu-toggle{top:10px;left:10px;width:42px;height:42px}.page-sidebar{width:min(285px,86vw)}}
 </style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')})})();
+function togglePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}
+function closePageMenu(){const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMenu()});
+</script>
+
 <div class="card">
 <h1>🔔 Notifications</h1>
 <p>Your latest StudyMate PH updates.</p>
@@ -1849,6 +2574,7 @@ h1 { color:#0a3472; }
 <a class="back" href="/dashboard">← Back to Dashboard</a>
 </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>'''
 
@@ -1914,30 +2640,59 @@ def schedule_page():
     <title>Class Schedule — StudyMate PH</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }}
-        body {{ min-height: 100vh; background-color: #fcf9f0; padding: 40px; }}
-        .overlay {{ background: rgba(255,255,255,0.92); padding: 40px; border-radius: 16px; max-width: 850px; margin: 0 auto; }}
+        body {{ min-height: 100vh; background: linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)), url('/static/bg.jpg') center/cover fixed; padding: 40px; }}
+        .overlay {{ background: rgba(255,255,255,0.88); padding: 40px; border-radius: 18px; max-width: 1000px; margin: 0 auto; box-shadow: 0 8px 28px rgba(23,75,143,.12); backdrop-filter: blur(6px); }}
         h1 {{ font-size: 32px; font-weight: 800; margin-bottom: 25px; }}
-        .add-form {{ background: #f9f9f9; padding: 25px; border-radius: 12px; margin-bottom: 35px; }}
+        .add-form {{ background: rgba(234,243,250,.82); padding: 25px; border-radius: 12px; margin-bottom: 35px; }}
         .add-form h3 {{ margin-bottom: 18px; font-size: 20px; }}
         .form-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }}
         .full-width {{ grid-column: 1 / -1; }}
         .add-form input, .add-form textarea {{ padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; width: 100%; }}
-        .add-btn {{ background: #0a3472; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-top: 15px; font-size: 16px; }}
+        .add-btn {{ background: #2F6F9F; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-top: 15px; font-size: 16px; }}
         .schedule-list {{ display: flex; flex-direction: column; gap: 16px; margin-top: 20px; }}
-        .schedule-item {{ display: flex; gap: 18px; align-items: flex-start; padding: 20px; border-left: 5px solid #64B5F6; border-radius: 10px; background: #f0f7ff; justify-content: space-between; }}
+        .schedule-item {{ display: flex; gap: 18px; align-items: flex-start; padding: 20px; border-left: 5px solid #5A8DB5; border-radius: 12px; background: rgba(245,249,253,.88); justify-content: space-between; box-shadow: 0 3px 12px rgba(23,75,143,.06); }}
         .time-col {{ min-width: 160px; }}
         .day-date {{ font-weight: 700; font-size: 20px; color: #222; margin-bottom: 8px; }}
         .time {{ font-size: 16px; color: #444; }}
         .subject {{ font-size: 22px; font-weight: 700; margin-bottom: 6px; color: #111; }}
         .room {{ color: #555; font-size: 15px; margin-bottom: 8px; }}
-        .comment {{ color: #666; font-size: 14px; font-style: italic; background: #e8f0fe; padding: 8px 12px; border-radius: 6px; margin-top: 6px; }}
+        .comment {{ color: #4f6680; font-size: 14px; font-style: italic; background: #EAF3FA; padding: 8px 12px; border-radius: 6px; margin-top: 6px; }}
         .no-sched {{ color: #777; font-style: italic; padding: 30px 0; text-align: center; }}
-        .back-link {{ display: inline-block; margin-top: 30px; color: #0a3472; text-decoration: none; font-weight: 600; }}
+        .back-link {{ display: inline-block; margin-top: 30px; color: #174B7A; text-decoration: none; font-weight: 600; }}
         .delete-btn {{ background: #ef4444; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }}
         .delete-btn:hover {{ background: #dc2626; }}
-    </style>
+    
+/* SHARED THREE-LINE MENU */
+.page-menu-toggle{{position:fixed;top:14px;left:18px;z-index:2200;width:46px;height:46px;border:1px solid rgba(255,255,255,.28);border-radius:12px;background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,#F2C94C 58%,#F2C94C 100%);box-shadow:0 6px 18px rgba(23,75,122,.28);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}}
+.page-menu-toggle span{{display:block;width:22px;height:3px;border-radius:4px;background:#fff;transition:.2s}}.page-menu-toggle span:nth-child(2){{background:#F2C94C}}.page-menu-toggle:hover{{transform:translateY(-1px);box-shadow:0 8px 22px rgba(23,75,122,.34)}}
+.page-menu-backdrop{{display:none;position:fixed;inset:0;background:rgba(9,31,55,.28);backdrop-filter:blur(2px);z-index:2050}}.page-sidebar{{position:fixed;top:0;left:0;bottom:0;width:285px;padding:84px 16px 18px;background:linear-gradient(180deg,#174B7A 0%,#123E68 72%,#0F355A 100%);color:#fff;z-index:2100;transform:translateX(-105%);transition:transform .24s ease;box-shadow:8px 0 26px rgba(0,0,0,.18);overflow:auto}}.page-sidebar.open{{transform:translateX(0)}}
+.page-sidebar-brand{{padding:0 10px 18px;border-bottom:1px solid rgba(255,255,255,.16);margin-bottom:14px}}.page-sidebar-brand h2{{margin:0;font-size:27px;font-weight:800}}.page-sidebar-brand h2 span{{color:#F2C94C}}.page-sidebar-brand p{{margin:3px 0 0;font-size:12px;opacity:.78}}.page-sidebar-nav{{display:flex;flex-direction:column;gap:7px}}.page-sidebar-nav a{{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:11px;color:#fff;text-decoration:none;font-weight:700;transition:.18s}}.page-sidebar-nav a:hover,.page-sidebar-nav a.active{{background:linear-gradient(90deg,#F2C94C,#f7d56d);color:#123E68}}.page-sidebar-nav .icon{{width:24px;text-align:center;font-size:19px}}.page-sidebar-bottom{{margin-top:22px;border-top:1px solid rgba(255,255,255,.16);padding:15px 10px 0;font-size:13px}}.page-sidebar-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}}.page-sidebar-actions a{{padding:10px 6px;text-align:center;border-radius:9px;text-decoration:none;font-weight:800;background:#fff;color:#174B7A}}.page-sidebar-actions a:last-child{{background:#F2C94C;color:#20354d}}.page-sidebar .menu-close-note{{font-size:11px;opacity:.68;margin-top:12px}}.page-nav-open .page-menu-backdrop{{display:block}}@media(max-width:700px){{.page-menu-toggle{{top:10px;left:10px;width:42px;height:42px}}.page-sidebar{{width:min(285px,86vw)}}
+</style>
 </head>
 <body>
+
+<button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
+<div class="page-menu-backdrop" onclick="closePageMenu()"></div>
+<aside class="page-sidebar" id="pageSidebar">
+<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<nav class="page-sidebar-nav">
+<a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
+<a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
+<a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
+<a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
+<a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
+<a data-page="profile" href="/profile"><span class="icon">⚙️</span>Settings</a>
+</nav>
+<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+</aside>
+<script>
+(function(){{const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){{const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile')))a.classList.add('active')}})}})();
+function togglePageMenu(){{const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle'),o=s.classList.toggle('open');document.body.classList.toggle('page-nav-open',o);b.setAttribute('aria-expanded',o?'true':'false')}}
+function closePageMenu(){{const s=document.getElementById('pageSidebar'),b=document.querySelector('.page-menu-toggle');s.classList.remove('open');document.body.classList.remove('page-nav-open');if(b)b.setAttribute('aria-expanded','false')}}
+document.addEventListener('keydown',function(e){{if(e.key==='Escape')closePageMenu()}});
+</script>
+
     <div class="overlay">
         <a href="/dashboard" class="back-link" style="margin-top:0;margin-bottom:20px;">← Back to Dashboard</a>
         <h1>📅 Class Schedule</h1>
@@ -1952,7 +2707,7 @@ def schedule_page():
                     <input type="text" name="room" placeholder="Room No." required>
                     <input type="time" name="time_in" required>
                     <input type="time" name="time_out" required>
-                    <label style="grid-column:1/-1;font-weight:700;color:#0a3472;">⏰ Alarm / Reminder (Optional)</label>
+                    <label style="grid-column:1/-1;font-weight:700;color:#174B7A;">⏰ Alarm / Reminder (Optional)</label>
                     <input type="date" name="alarm_date" title="Alarm Date">
                     <input type="time" name="alarm_time" title="Alarm Time">
                     <textarea name="comment" class="full-width" rows="2" placeholder="Add Comment (Optional)"></textarea>
@@ -1986,6 +2741,7 @@ def schedule_page():
 
     </div>
 <script src="/static/alarm.js"></script>
+
 </body>
 </html>""")
 
