@@ -60,6 +60,11 @@ GLOBAL_THEME_JS = r"""
 
 @app.after_request
 def inject_global_theme(response):
+    # Dark Mode is intentionally unavailable on the landing/Get Started page
+    # and Login page. It is controlled only from the Dashboard.
+    public_paths = {'/', '/login'}
+    if request.path in public_paths:
+        return response
     if response.content_type and response.content_type.startswith('text/html'):
         try:
             html=response.get_data(as_text=True)
