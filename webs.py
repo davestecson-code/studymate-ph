@@ -1,6 +1,6 @@
 from flask import Flask, render_template_string, send_from_directory, request, redirect, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
-import os, json, uuid, secrets, smtplib
+import os, json, uuid, secrets, smtplib, urllib.request, urllib.error
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from werkzeug.utils import secure_filename
@@ -108,6 +108,7 @@ GLOBAL_PAGE_MENU_HTML = r'''
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -225,7 +226,8 @@ def inject_global_theme(response):
                     '/notes': 'Notes',
                     '/notifications': 'Notifications',
                     '/profile': 'Profile',
-                     '/settings': 'Settings'
+                     '/settings': 'Settings',
+                    '/premium': 'Premium Subscription'
                 }
                 header_title = next((v for k, v in title_map.items() if request.path.startswith(k)), 'Dashboard')
                 badge = f'<span class="header-badge">{unread}</span>' if unread else ''
@@ -250,6 +252,12 @@ DEADLINE_FILE = "deadlines.json"
 GROUP_FILE = "group_projects.json"
 NOTES_FILE = "notes.json"
 RECOVERY_FILE = "password_resets.json"
+PREMIUM_RECEIPTS = os.path.join("static", "premium_receipts")
+QRPH_IMAGE = os.getenv("QRPH_IMAGE", os.path.join("static", "qrph.png"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+app.config["OPENAI_API_KEY"] = OPENAI_API_KEY
+os.makedirs(PREMIUM_RECEIPTS, exist_ok=True)
 UPLOAD_FOLDER = os.path.join("static", "group_uploads")
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {
@@ -1307,6 +1315,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -1698,6 +1707,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -1819,6 +1829,70 @@ a{color:#174B7A;font-weight:700;text-decoration:none;margin-left:12px}
 </html>'''
 
 
+@app.route('/premium')
+def premium_page():
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    user = load_users().get(str(session["user_id"]), {})
+    return render_template_string(r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Premium — StudyMate PH</title>
+<style>*{box-sizing:border-box}body{margin:0;padding:28px;font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(135deg,#eaf3fa,#f7f9fc);color:#20354d}.wrap{max-width:960px;margin:auto}.card{background:white;border-radius:18px;padding:24px;margin:18px 0;box-shadow:0 8px 28px #174b7a18}.hero{background:linear-gradient(135deg,#174b7a,#236fa5);color:white}.hero h1{font-size:34px;margin:6px 0}.price{font-size:32px;font-weight:900;color:#f2c94c}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.btn{background:#f2c94c;color:#20354d;border:0;border-radius:9px;padding:12px 16px;font-weight:800;cursor:pointer}.notice{padding:12px;border-radius:10px;background:#edf5fb;margin:12px 0}.ok{background:#e8f7e8;color:#23672c}.muted{color:#667085}input{font:inherit;padding:11px;border:1px solid #d9e0ea;border-radius:9px;width:100%;margin:7px 0 12px}.qr{width:min(100%,300px);display:block;margin:12px auto;border:1px solid #ddd;border-radius:12px}.chatlog{height:230px;overflow:auto;padding:12px;background:#f5f8fc;border-radius:10px;white-space:pre-wrap}.msg{padding:9px;margin:6px 0;border-radius:9px;background:#eaf3fa}.msg.ai{background:#fff5d5}textarea{width:100%;font:inherit;padding:11px;border:1px solid #d9e0ea;border-radius:9px;margin:10px 0}@media(max-width:700px){body{padding:14px}.grid{grid-template-columns:1fr}}</style></head><body><main class="wrap">
+<a href="/dashboard">← Back to Dashboard</a><section class="card hero"><div>STUDYMATE PH · PREMIUM</div><h1>More room for your best work.</h1><p>Unlimited members in groups you create, plus AI study assistance.</p><div class="price">₱30 <small style="font-size:15px;color:white">subscription fee</small></div></section>
+{% if request.args.get('submitted') %}<div class="notice ok">Receipt submitted. Premium activates after payment review.</div>{% endif %}
+{% if user.get('premium_active') %}<div class="notice ok">✨ Premium is active on your account.</div>{% elif user.get('premium_status') == 'pending' %}<div class="notice">⏳ Payment is waiting for review.</div>{% endif %}
+<div class="grid"><section class="card"><h2>Premium benefits</h2><p>✅ Groups you create can grow beyond the standard 15-member limit.</p><p>✅ Ask the AI study assistant for explanations, study plans, and project ideas.</p><p class="muted">Standard groups support up to 15 members, including the leader.</p></section>
+<section class="card"><h2>Pay with QRPH</h2><p>Scan with GCash, Maya, GoTyme, or another QRPH-enabled app. Pay exactly <b>₱30</b>.</p>{% if qr_ready %}<img class="qr" src="/static/qrph.png" alt="Merchant QRPH payment code">{% else %}<div class="notice">Merchant QR is not configured. Place your official QR image at <code>static/qrph.png</code> or set QRPH_IMAGE.</div>{% endif %}<p class="muted">Upload your receipt after paying. Payment is reviewed before Premium is enabled.</p><form method="POST" action="/premium/submit" enctype="multipart/form-data"><label>Payment reference (optional)<input name="reference" maxlength="80"></label><label>Receipt image<input type="file" name="receipt" accept="image/png,image/jpeg,image/webp" required></label><button class="btn">Submit receipt for review</button></form></section></div>
+<section class="card"><h2>✨ Premium AI study assistant</h2>{% if user.get('premium_active') %}<p class="muted">Ask about a concept, a study plan, or your group project.</p><div id="chat" class="chatlog" aria-live="polite"></div><form id="ask"><textarea id="question" maxlength="2000" required placeholder="What would you like help with?"></textarea><button class="btn">Ask the assistant</button></form><script>document.getElementById('ask').onsubmit=async e=>{e.preventDefault();let q=document.getElementById('question'),chat=document.getElementById('chat'),v=q.value.trim();if(!v)return;let m=document.createElement('div');m.className='msg';m.textContent='You: '+v;chat.appendChild(m);q.value='';let a=document.createElement('div');a.className='msg ai';a.textContent='Thinking…';chat.appendChild(a);try{let r=await fetch('/api/premium/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:v})}),d=await r.json();a.textContent=d.answer||d.error||'No answer returned.'}catch(_){a.textContent='Could not connect. Please try again.'}chat.scrollTop=chat.scrollHeight}</script>{% else %}<div class="notice">Activate Premium to use the assistant. The server also needs an OPENAI_API_KEY.</div>{% endif %}</section></main></body></html>''', user=user, qr_ready=os.path.isfile(QRPH_IMAGE))
+
+@app.route('/premium/submit', methods=['POST'])
+def premium_submit():
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    receipt = request.files.get("receipt")
+    ext = os.path.splitext(secure_filename(receipt.filename if receipt else ""))[1].lower()
+    if not receipt or ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "Upload a PNG, JPG, or WEBP payment receipt.", 400
+    user_id = str(session["user_id"])
+    users = load_users()
+    user = users.get(user_id, {})
+    if user.get("premium_active"):
+        return redirect(url_for("premium_page"))
+    filename = secure_filename(f"{user_id}_{uuid.uuid4().hex}{ext}")
+    receipt.save(os.path.join(PREMIUM_RECEIPTS, filename))
+    user.update({"premium_status": "pending", "premium_active": False,
+                 "premium_reference": request.form.get("reference", "").strip()[:80],
+                 "premium_receipt": filename,
+                 "premium_submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    users[user_id] = user
+    save_users(users)
+    return redirect(url_for("premium_page", submitted="1"))
+
+@app.route('/api/premium/ask', methods=['POST'])
+def premium_ask():
+    if "user_id" not in session:
+        return {"error": "Please sign in."}, 401
+    user = load_users().get(str(session["user_id"]), {})
+    if not user.get("premium_active"):
+        return {"error": "Premium is required for the AI assistant."}, 403
+    if not OPENAI_API_KEY:
+        return {"error": "AI is not configured. Set OPENAI_API_KEY on the server."}, 503
+    question = (request.get_json(silent=True) or {}).get("question", "").strip()
+    if not question or len(question) > 2000:
+        return {"error": "Enter a question of up to 2,000 characters."}, 400
+    body = json.dumps({"model": OPENAI_MODEL, "messages": [
+        {"role": "system", "content": "You are StudyMate PH's helpful study assistant. Explain clearly and encourage learning."},
+        {"role": "user", "content": question}], "max_tokens": 700}).encode("utf-8")
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=body,
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return {"answer": result["choices"][0]["message"]["content"]}
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, KeyError, ValueError):
+        app.logger.exception("Premium AI request failed")
+        return {"error": "The AI assistant is temporarily unavailable."}, 502
+
+
 @app.route('/group-projects')
 def group_projects():
     if "user_id" not in session:
@@ -1881,6 +1955,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -2031,6 +2106,13 @@ def join_group_project():
     if user_id in [str(x) for x in target.get("members", [])]:
         return redirect(url_for("group_project_detail", group_id=target["id"]))
 
+    # The group creator's Premium status controls the member limit.
+    leader = load_users().get(str(target.get("leader_id", "")), {})
+    if not leader.get("premium_active", False) and len(target.get("members", [])) >= 15:
+        return ("<div style='font-family:Arial;padding:40px'>This group has reached its 15-member limit. "
+                "The group leader can upgrade to Premium to allow unlimited members.<br><br>"
+                "<a href='/group-projects'>Go back</a></div>"), 403
+
     target.setdefault("members", []).append(user_id)
     save_groups(groups)
 
@@ -2143,6 +2225,7 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:whit
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -2724,6 +2807,7 @@ h1 { color:#174B7A; }
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
@@ -2868,6 +2952,7 @@ def schedule_page():
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
 <a data-page="deadlines" href="/deadlines"><span class="icon">📝</span>Deadlines</a>
 <a data-page="group-projects" href="/group-projects"><span class="icon">👥</span>Group Projects</a>
+<a data-page="premium" href="/premium"><span class="icon">✨</span>Premium · ₱30</a>
 <a data-page="notes" href="/notes"><span class="icon">📚</span>Notes</a>
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
