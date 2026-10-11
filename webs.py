@@ -101,8 +101,8 @@ body.dark .page-sidebar-nav a:hover,body.dark .page-sidebar-nav a.active{backgro
 
 GLOBAL_PAGE_MENU_HTML = r'''
 <div class="page-menu-backdrop" onclick="closePageMenu(event)" aria-hidden="true"></div>
-<aside class="page-sidebar" id="pageSidebar" aria-label="StudyMate navigation">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<aside class="page-sidebar" id="pageSidebar" aria-label="Cramly navigation">
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -113,7 +113,7 @@ GLOBAL_PAGE_MENU_HTML = r'''
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 '''
 
@@ -121,7 +121,7 @@ GLOBAL_FIXED_HEADER_HTML = r'''
 <header class="studymate-global-header" id="studymateGlobalHeader">
     <div class="header-left">
         <button class="header-menu" type="button" onclick="togglePageMenu(event); return false;" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
-        <div class="header-brand">StudyMate <span>PH</span></div>
+        <div class="header-brand">Cramly</div>
     </div>
     <div class="header-right">
         <button class="header-bell" type="button" onclick="window.location.href='/notifications'" aria-label="Notifications">
@@ -177,7 +177,7 @@ GLOBAL_FIXED_HEADER_HTML = r'''
 GLOBAL_THEME_JS = r"""
 <script id="studymate-global-theme-js">
 (function(){
-    const KEY='studymate_dark_mode';
+    const KEY='cramly_dark_mode';
     function applyTheme(){
         const dark=localStorage.getItem(KEY)==='1';
         document.documentElement.classList.toggle('dark-mode-active',dark);
@@ -198,20 +198,43 @@ GLOBAL_THEME_JS = r"""
 </script>
 """
 
+@app.route('/manifest.webmanifest')
+def pwa_manifest():
+    return send_from_directory('static', 'manifest.webmanifest', mimetype='application/manifest+json')
+
+
+@app.route('/service-worker.js')
+def pwa_service_worker():
+    response = send_from_directory('static', 'service-worker.js', mimetype='application/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
+@app.route('/offline')
+def offline_page():
+    return render_template_string('''<!doctype html><html lang="tl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#174B7A"><title>Offline · Cramly</title><style>body{font:16px system-ui,sans-serif;background:#eef5fa;color:#183650;display:grid;min-height:100vh;place-items:center;margin:0}.card{background:white;border-radius:20px;padding:32px;max-width:440px;margin:20px;box-shadow:0 12px 36px #174b7a22}h1{color:#174B7A}a{display:inline-block;background:#174B7A;color:white;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:700}</style></head><body><main class="card"><h1>📴 Offline ka</h1><p>Hindi ma-load ang pahinang ito dahil walang internet. Buksan ang mga pahinang na-view mo na habang online para makita ang naka-save na kopya.</p><p>Kapag bumalik ang internet, gumagana ulit ang login, pag-save, uploads, at online sync.</p><a href="/">Bumalik sa Cramly</a></main></body></html>''')
+
+
 @app.after_request
 def inject_global_theme(response):
     # Dark Mode is intentionally unavailable on the landing/Get Started page
     # and Login page. It is controlled only from the Dashboard.
     public_paths = {'/', '/login'}
-    if request.path in public_paths:
-        return response
     if response.content_type and response.content_type.startswith('text/html'):
         try:
             html=response.get_data(as_text=True)
-            if 'id="studymate-global-theme"' not in html:
-                html=html.replace('</head>', GLOBAL_THEME_CSS + '</head>', 1)
-            if 'id="studymate-global-theme-js"' not in html:
-                html=html.replace('</body>', GLOBAL_THEME_JS + '</body>', 1)
+            if request.path not in public_paths:
+                if 'id="studymate-global-theme"' not in html:
+                    html=html.replace('</head>', GLOBAL_THEME_CSS + '</head>', 1)
+                if 'id="studymate-global-theme-js"' not in html:
+                    html=html.replace('</body>', GLOBAL_THEME_JS + '</body>', 1)
+            pwa_head = '''<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#174B7A"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Cramly"><link rel="icon" href="/static/cramly-icon.svg" type="image/svg+xml"><style>#cramly-install{position:fixed;right:16px;bottom:16px;z-index:999999;border:0;border-radius:14px;background:#F2C94C;color:#123E68;padding:13px 17px;font:800 15px system-ui;box-shadow:0 5px 18px #0003;cursor:pointer;display:none}#cramly-status{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:999998;background:#263746;color:white;padding:9px 14px;border-radius:99px;font:700 13px system-ui;display:none}#cramly-status.offline{display:block;background:#8a3b25}</style>'''
+            if 'rel="manifest" href="/manifest.webmanifest"' not in html:
+                html=html.replace('</head>', pwa_head + '</head>', 1)
+            pwa_body = '''<button id="cramly-install" type="button">⬇ I-install ang Cramly</button><div id="cramly-status" role="status"></div><script>(function(){var promptEvent;var b=document.getElementById('cramly-install');var status=document.getElementById('cramly-status');function onlineState(){status.textContent=navigator.onLine?'':'Offline mode · maaaring hindi gumana ang pag-save';status.classList.toggle('offline',!navigator.onLine)}window.addEventListener('online',onlineState);window.addEventListener('offline',onlineState);onlineState();window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();promptEvent=e;b.style.display='block'});b.addEventListener('click',async function(){if(promptEvent){promptEvent.prompt();await promptEvent.userChoice;promptEvent=null;b.style.display='none'}else{alert('Para i-install: buksan ang browser menu at piliin ang “Add to Home Screen” o “Install app”. Sa iPhone/iPad: Share → Add to Home Screen.');}});window.addEventListener('appinstalled',function(){b.style.display='none'});setTimeout(function(){if(!promptEvent&&!window.matchMedia('(display-mode: standalone)').matches)b.style.display='block'},800);if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/service-worker.js').catch(function(){})})}})();</script>'''
+            if 'id="cramly-install"' not in html:
+                html=html.replace('</body>', pwa_body + '</body>', 1)
 
             # Dashboard already has its own fixed header. Every other
             # authenticated page gets the same fixed top header.
@@ -308,15 +331,15 @@ def send_recovery_email(recipient, reset_link):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         return False, "Gmail recovery is not configured yet. Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD."
     msg = EmailMessage()
-    msg["Subject"] = "StudyMate PH - Password Recovery"
+    msg["Subject"] = "Cramly - Password Recovery"
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = recipient
     msg.set_content(
         "Hello,\n\n"
-        "We received a request to reset your StudyMate PH password.\n\n"
+        "We received a request to reset your Cramly password.\n\n"
         f"Open this link to create a new password: {reset_link}\n\n"
         "This link expires in 30 minutes. If you did not request this, you can ignore this email.\n\n"
-        "StudyMate PH"
+        "Cramly"
     )
     try:
         # Gmail works reliably with SSL on port 465. The host/port can also be
@@ -508,7 +531,7 @@ def home():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StudyMate PH</title>
+    <title>Cramly</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
         body { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #F5F8FC; }
@@ -526,9 +549,9 @@ def home():
 <body>
     <div class="logo-row">
         <div class="logo-icon-wrap"><div class="logo-square"><span class="logo-letter-s">S</span><span class="logo-pencil">✏️</span></div></div>
-        <span class="brand-text">studymate <span class="ph">ph</span></span>
+        <span class="brand-text">cramly</span>
     </div>
-    <h1 class="main-title">StudyMate PH</h1>
+    <h1 class="main-title">Cramly</h1>
     <button class="get-started-btn" onclick="window.location.href='/login'">Get Started</button>
 
 <script src="/static/alarm.js"></script>
@@ -606,7 +629,7 @@ LOGIN_HTML = '''<!DOCTYPE html>
     <div class="right-side">
         <div class="logo-row">
             <div class="logo-icon-wrap"><div class="logo-square"><span class="logo-letter-s">S</span><span class="logo-pencil">✏️</span></div></div>
-            <span class="brand-text">studymate <span class="ph">ph</span></span>
+            <span class="brand-text">cramly</span>
         </div>
         {% if request.args.get('reset') == 'success' %}<p style="color:#237b35;background:#e8f7e8;padding:10px;border-radius:9px;font-weight:700;">✅ Password reset successful. You can now log in.</p>{% endif %}
         <form method="POST">
@@ -696,14 +719,14 @@ def reset_password(token):
 
 
 FORGOT_PASSWORD_HTML = r'''<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Recover Password - StudyMate PH</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Recover Password - Cramly</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(rgba(10,52,114,.55),rgba(10,52,114,.55)),url('/static/bg.jpg') center/cover fixed}.card{width:100%;max-width:520px;background:rgba(255,255,255,.97);padding:38px;border-radius:24px;box-shadow:0 12px 35px rgba(0,0,0,.2)}h1{color:#174B7A;margin:0 0 8px}.sub{color:#667085;margin:0 0 22px}.field{width:100%;padding:15px 17px;border:1px solid #ccc;border-radius:12px;font-size:16px;margin-bottom:14px}.btn{width:100%;border:0;border-radius:50px;padding:15px;background:#F2C94C;color:#222;font-weight:800;font-size:17px;cursor:pointer}.back{display:block;text-align:center;margin-top:20px;color:#174B7A;text-decoration:none;font-weight:700}.success{padding:12px;border-radius:10px;background:#e8f7e8;color:#237b35;margin-bottom:15px}.error{padding:12px;border-radius:10px;background:#ffebee;color:#c62828;margin-bottom:15px}
 </style></head><body><div class="card"><h1>🔐 Recover Password</h1><p class="sub">Enter your Gmail address and we will send a secure password reset link.</p>{% if message %}<div class="success">{{ message }}</div>{% endif %}{% if error %}<div class="error">{{ error }}</div>{% endif %}<form method="POST"><input class="field" type="email" name="email" placeholder="Gmail / Email Address" required><button class="btn" type="submit">Send Recovery Link</button></form><a class="back" href="/login">← Back to Log In</a></div>
 </body></html>'''
 
 RESET_PASSWORD_HTML = r'''<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Reset Password - StudyMate PH</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Reset Password - Cramly</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:#F5F8FC}.card{width:100%;max-width:520px;background:white;padding:38px;border-radius:24px;box-shadow:0 8px 25px rgba(0,0,0,.1)}h1{color:#174B7A;margin:0 0 20px}.field-wrap{position:relative;margin-bottom:14px}.field{width:100%;padding:15px 62px 15px 17px;border:1px solid #ccc;border-radius:12px;font-size:16px}.toggle{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:0;background:transparent;color:#2F6F9F;cursor:pointer;padding:6px;border-radius:8px;display:flex;align-items:center;justify-content:center}.toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.toggle:hover{background:transparent;opacity:.72}.btn{width:100%;border:0;border-radius:50px;padding:15px;background:#F2C94C;font-weight:800;font-size:17px;cursor:pointer}.error{padding:12px;border-radius:10px;background:#ffebee;color:#c62828;margin-bottom:15px}.back{display:block;text-align:center;margin-top:20px;color:#174B7A;text-decoration:none;font-weight:700}
 </style></head><body><div class="card"><h1>🔑 Create New Password</h1>{% if error %}<div class="error">{{ error }}</div>{% endif %}{% if not invalid %}<form method="POST"><div class="field-wrap"><input id="resetPassword" class="field" type="password" name="password" placeholder="New Password" required><button type="button" class="toggle icon-toggle" onclick="togglePassword('resetPassword',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div><div class="field-wrap"><input id="resetConfirm" class="field" type="password" name="confirm_password" placeholder="Confirm New Password" required><button type="button" class="toggle icon-toggle" onclick="togglePassword('resetConfirm',this)" aria-label="Show password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg></button></div><button class="btn" type="submit">Reset Password</button></form>{% endif %}<a class="back" href="/login">← Back to Log In</a></div><script>function eyeIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.8"/></svg>';} function eyeOffIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.2 3.9M6.2 6.2C3.5 8.1 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 4.1-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';} function togglePassword(id,btn){const input=document.getElementById(id);if(!input||!btn)return;const show=input.type==='password';input.type=show?'text':'password';btn.innerHTML=show?eyeOffIcon():eyeIcon();btn.setAttribute('aria-label',show?'Hide password':'Show password');btn.setAttribute('title',show?'Hide password':'Show password');}</script>
@@ -760,7 +783,7 @@ def register():
     <div class="right-side">
         <div class="logo-row">
             <div class="logo-icon-wrap"><div class="logo-square"><span class="logo-letter-s">S</span><span class="logo-pencil">✏️</span></div></div>
-            <span class="brand-text">studymate <span class="ph">ph</span></span>
+            <span class="brand-text">cramly</span>
         </div>
         <h2>Create Account</h2>
         <form method="POST">
@@ -848,7 +871,7 @@ DASHBOARD_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dashboard - StudyMate PH</title>
+<title>Dashboard - Cramly</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}
 
@@ -1022,7 +1045,7 @@ body.dark .menu-toggle{background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,
 <header class="top-header">
     <div class="header-left">
         <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
-        <div class="header-brand">StudyMate <span>PH</span></div>
+        <div class="header-brand">Cramly</div>
     </div>
     <div class="header-right">
         <div class="notification-menu">
@@ -1048,7 +1071,7 @@ body.dark .menu-toggle{background:linear-gradient(135deg,#174B7A 0%,#174B7A 58%,
 
 <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-        <h2>StudyMate <span>PH</span></h2>
+        <h2>Cramly</h2>
         <p>Student Hub</p>
     </div>
 
@@ -1182,12 +1205,12 @@ function toggleSidebar(){
 
 function toggleDarkMode(){
     const dark = document.body.classList.toggle('dark');
-    localStorage.setItem('studymate_dark_mode', dark ? '1' : '0');
+    localStorage.setItem('cramly_dark_mode', dark ? '1' : '0');
     const btn = document.querySelector('.dark-mode');
     if(btn) btn.textContent = dark ? '☀️ Light Mode' : '🌙 Dark Mode';
 }
 (function(){
-    const dark = localStorage.getItem('studymate_dark_mode') === '1';
+    const dark = localStorage.getItem('cramly_dark_mode') === '1';
     if(dark) document.body.classList.add('dark');
     const btn = document.querySelector('.dark-mode');
     if(btn) btn.textContent = dark ? '☀️ Light Mode' : '🌙 Dark Mode';
@@ -1266,7 +1289,7 @@ def deadlines():
 <!DOCTYPE html>
 <html>
 <head>
-<title>Deadlines - StudyMate PH</title>
+<title>Deadlines - Cramly</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{box-sizing:border-box}
@@ -1309,7 +1332,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -1320,7 +1343,7 @@ textarea{min-height:85px;resize:vertical}.full{grid-column:1/-1}
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
@@ -1514,7 +1537,7 @@ def edit_deadline(deadline_id):
 
     return render_template_string("""
 <!DOCTYPE html>
-<html><head><title>Edit Deadline - StudyMate PH</title>
+<html><head><title>Edit Deadline - Cramly</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body{font-family:Arial,sans-serif;background:#f5f7fb;margin:0;color:#26354a}
@@ -1668,7 +1691,7 @@ NOTES_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Notes - StudyMate PH</title>
+<title>Notes - Cramly</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif}
 body{margin:0;background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed;color:#20354d;padding:30px}
@@ -1701,7 +1724,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -1712,7 +1735,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 14px;cursor:pointer;font-wei
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
@@ -1792,7 +1815,7 @@ NOTE_EDIT_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Edit Note - StudyMate PH</title>
+<title>Edit Note - Cramly</title>
 <style>
 *{box-sizing:border-box;font-family:'Segoe UI',sans-serif}
 body{margin:0;background:linear-gradient(rgba(226,239,250,.78),rgba(242,247,252,.90)),url('/static/bg.jpg') center/cover fixed;padding:30px}
@@ -1835,7 +1858,7 @@ def premium_page():
         return redirect(url_for("login"))
     user = load_users().get(str(session["user_id"]), {})
     return render_template_string(r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Premium — StudyMate PH</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Premium — Cramly</title>
 <style>*{box-sizing:border-box}body{margin:0;padding:28px;font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(135deg,#eaf3fa,#f7f9fc);color:#20354d}.wrap{max-width:960px;margin:auto}.card{background:white;border-radius:18px;padding:24px;margin:18px 0;box-shadow:0 8px 28px #174b7a18}.hero{background:linear-gradient(135deg,#174b7a,#236fa5);color:white}.hero h1{font-size:34px;margin:6px 0}.price{font-size:32px;font-weight:900;color:#f2c94c}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.btn{background:#f2c94c;color:#20354d;border:0;border-radius:9px;padding:12px 16px;font-weight:800;cursor:pointer}.notice{padding:12px;border-radius:10px;background:#edf5fb;margin:12px 0}.ok{background:#e8f7e8;color:#23672c}.muted{color:#667085}input{font:inherit;padding:11px;border:1px solid #d9e0ea;border-radius:9px;width:100%;margin:7px 0 12px}.qr{width:min(100%,300px);display:block;margin:12px auto;border:1px solid #ddd;border-radius:12px}.chatlog{height:230px;overflow:auto;padding:12px;background:#f5f8fc;border-radius:10px;white-space:pre-wrap}.msg{padding:9px;margin:6px 0;border-radius:9px;background:#eaf3fa}.msg.ai{background:#fff5d5}textarea{width:100%;font:inherit;padding:11px;border:1px solid #d9e0ea;border-radius:9px;margin:10px 0}@media(max-width:700px){body{padding:14px}.grid{grid-template-columns:1fr}}</style></head><body><main class="wrap">
 <a href="/dashboard">← Back to Dashboard</a><section class="card hero"><div>STUDYMATE PH · PREMIUM</div><h1>More room for your best work.</h1><p>Unlimited members in groups you create, plus AI study assistance.</p><div class="price">₱30 <small style="font-size:15px;color:white">subscription fee</small></div></section>
 {% if request.args.get('submitted') %}<div class="notice ok">Receipt submitted. Premium activates after payment review.</div>{% endif %}
@@ -1880,7 +1903,7 @@ def premium_ask():
     if not question or len(question) > 2000:
         return {"error": "Enter a question of up to 2,000 characters."}, 400
     body = json.dumps({"model": OPENAI_MODEL, "messages": [
-        {"role": "system", "content": "You are StudyMate PH's helpful study assistant. Explain clearly and encourage learning."},
+        {"role": "system", "content": "You are Cramly's helpful study assistant. Explain clearly and encourage learning."},
         {"role": "user", "content": question}], "max_tokens": 700}).encode("utf-8")
     req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=body,
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, method="POST")
@@ -1913,7 +1936,7 @@ def group_projects():
 <!DOCTYPE html>
 <html>
 <head>
-<title>Group Projects - StudyMate PH</title>
+<title>Group Projects - Cramly</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 *{box-sizing:border-box}
@@ -1949,7 +1972,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -1960,7 +1983,7 @@ button,.btn{border:0;border-radius:9px;padding:10px 15px;cursor:pointer;font-wei
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
@@ -2219,7 +2242,7 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:whit
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -2230,7 +2253,7 @@ button{border:0;border-radius:8px;padding:9px 13px;background:#174B7A;color:whit
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
@@ -2679,7 +2702,7 @@ PROFILE_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Profile - StudyMate PH</title>
+<title>Profile - Cramly</title>
 <style>
 * { box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
 body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center center/cover no-repeat fixed; padding:105px 35px 35px; color:#20354d; }
@@ -2712,7 +2735,7 @@ body.dark input{background:#0f2236!important;color:#eaf2fb!important;border-colo
 </div>
 <div class="card">
 <h1>👤 My Profile</h1>
-<p>Edit your StudyMate PH account information.</p>
+<p>Edit your Cramly account information.</p>
 
 {% if message %}<div class="success">✅ {{ message }}</div>{% endif %}
 {% if error %}<div class="error">❌ {{ error }}</div>{% endif %}
@@ -2777,7 +2800,7 @@ NOTIFICATIONS_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Notifications - StudyMate PH</title>
+<title>Notifications - Cramly</title>
 <style>
 * { box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
 body { margin:0; background:linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)),url('/static/bg.jpg') center/cover fixed; padding:35px; color:#20354d; }
@@ -2801,7 +2824,7 @@ h1 { color:#174B7A; }
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -2812,7 +2835,7 @@ h1 { color:#174B7A; }
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')})})();
@@ -2823,7 +2846,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')closePageMen
 
 <div class="card">
 <h1>🔔 Notifications</h1>
-<p>Your latest StudyMate PH updates.</p>
+<p>Your latest Cramly updates.</p>
 
 {% if user_notifications %}
     {% for n in user_notifications|reverse %}
@@ -2907,7 +2930,7 @@ def schedule_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Class Schedule — StudyMate PH</title>
+    <title>Class Schedule — Cramly</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }}
         body {{ min-height: 100vh; background: linear-gradient(rgba(228,239,249,.80),rgba(239,246,252,.90)), url('/static/bg.jpg') center/cover fixed; padding: 40px; }}
@@ -2946,7 +2969,7 @@ def schedule_page():
 <button class="page-menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" onclick="togglePageMenu()"><span></span><span></span><span></span></button>
 <div class="page-menu-backdrop" onclick="closePageMenu()"></div>
 <aside class="page-sidebar" id="pageSidebar">
-<div class="page-sidebar-brand"><h2>StudyMate <span>PH</span></h2><p>Student Hub</p></div>
+<div class="page-sidebar-brand"><h2>Cramly</h2><p>Student Hub</p></div>
 <nav class="page-sidebar-nav">
 <a data-page="dashboard" href="/dashboard"><span class="icon">🏠</span>Dashboard</a>
 <a data-page="schedule" href="/schedule"><span class="icon">📅</span>Class Schedule</a>
@@ -2957,7 +2980,7 @@ def schedule_page():
 <a data-page="notifications" href="/notifications"><span class="icon">🔔</span>Notifications</a>
 <a data-page="settings" href="/settings"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="page-sidebar-bottom">StudyMate PH Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
+<div class="page-sidebar-bottom">Cramly Student Hub<div class="page-sidebar-actions"><a href="/profile">👤 Profile</a><a href="/logout">↪ Logout</a></div></div>
 </aside>
 <script>
 (function(){{const p=window.location.pathname;document.querySelectorAll('.page-sidebar-nav a[data-page]').forEach(function(a){{const k=a.dataset.page;if((k==='dashboard'&&p==='/dashboard')||(k==='schedule'&&p.startsWith('/schedule'))||(k==='deadlines'&&p.startsWith('/deadlines'))||(k==='group-projects'&&p.startsWith('/group-projects'))||(k==='notes'&&p.startsWith('/notes'))||(k==='notifications'&&p.startsWith('/notifications'))||(k==='profile'&&p.startsWith('/profile'))||(k==='settings'&&p.startsWith('/settings')))a.classList.add('active')}})}})();
