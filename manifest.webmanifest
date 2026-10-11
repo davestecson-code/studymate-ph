@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "Cramly - Student Hub",
+  "short_name": "Cramly",
+  "description": "Study planner for students",
+  "lang": "en-PH",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#eef5fa",
+  "theme_color": "#174B7A",
+  "icons": [
+    {
+      "src": "/static/cramly-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
